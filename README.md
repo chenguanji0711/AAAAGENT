@@ -1,70 +1,80 @@
-# AAAAGENT · 项目整体架构
+<div align="center">
+  <img src="assets/original-design/whale-avatar.png" width="144" alt="AAAAGENT 鲸鱼娘角色设计" />
+  <h1>AAAAGENT</h1>
+  <p><strong><a href="https://www.bilibili.com/video/BV1cueG6sE85/">▶ 观看完整演示 · 哔哩哔哩</a></strong></p>
+  <p>会聊天、记得相处，也能把想法交给工作 Agent。</p>
+  <p><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
+  <p><a href="docs/PLATFORMS.md">Mac / Windows</a> · <a href="docs/SETUP.md">开始使用</a> · <a href="docs/MEMORY.md">记忆与上下文</a> · <a href="docs/SOCIAL_MEMORY.md">角色社交</a> · <a href="docs/PROMPT_REFERENCES.md">提示词与社区参考</a> · <a href="docs/LIVE2D.md">接入自己的 Live2D</a> · <a href="assets/original-design/README.md">DeepSeek 大肥鱼设计稿</a></p>
+</div>
 
-当前架构 · 2026-10-18。桌面陪伴、群聊社交与工作执行通过明确的上下文和回执连接：
-
-```mermaid
-flowchart TB
-    subgraph ENTRY["交互入口"]
-        PET["桌宠窗口<br/>macOS Swift / WebKit · Windows Electron"]
-        WX["微信私聊<br/>文字 / 语音"]
-        QQ["Windows QQ 群机器人<br/>现有迁移包 + 渠道适配"]
-        WEB["网页管理<br/>配置 · 记忆 · 项目"]
-    end
-
-    subgraph COMPANION["本机陪伴与工作后端"]
-        INPUT["输入处理<br/>文字 · ASR · 可选唤醒 / 图像观察"]
-        ROUTE{"聊天 / 工作"}
-        CONTEXT["上下文组装<br/>近期对话 · 相关记忆 · 情绪 · 社交来源"]
-        PRIVATE[("私人 SQLite<br/>对话 · 长期记忆 · 情绪")]
-        ANSWER["对话与回应<br/>文字 · TTS · 角色动作"]
-        CONFIRM["任务卡 · 用户确认"]
-        WORK["T3 Code / Flow 工作台<br/>Codex · DeepSeek Harness"]
-        PROJECT[("项目索引 / 工作记录")]
-    end
-
-    subgraph SOCIAL["独立角色社交服务"]
-        RECEIPT["实际回复 + 发送回执<br/>持久队列 · 幂等去重"]
-        SUMMARY["云端社交摘要<br/>保留群 · 成员 · 时间 · 来源"]
-        GROUP[("群聊库<br/>事件 · 回执 · 摘要 · 共享策略")]
-        CACHE[("桌宠社交缓存<br/>15 秒同步 · 5 分钟过期停用")]
-    end
-
-    subgraph SERVICES["模型与检索能力"]
-        CLOUD["可配置云端模型<br/>对话 · ASR / TTS · 图像 · 结构化记忆"]
-        LOCAL["Windows 可选本地模型<br/>ASR · TTS · Ollama 对话"]
-        SEARCH["QQ 检索<br/>项目代码索引 · 联网搜索 · 天气"]
-    end
-
-    PET --> INPUT
-    WX --> INPUT
-    INPUT --> ROUTE
-    ROUTE -->|聊天| CONTEXT
-    PRIVATE --> CONTEXT
-    CACHE -->|仅允许共享的摘要| CONTEXT
-    CONTEXT --> ANSWER
-    ANSWER --> PET
-    ANSWER --> WX
-    ANSWER -.后台记忆整理.-> PRIVATE
-    ROUTE -->|工作| CONFIRM
-    CONFIRM --> WORK
-    WORK <--> PROJECT
-    WORK -->|状态与结果| PET
-    QQ <--> SEARCH
-    QQ --> CLOUD
-    QQ -->|成功送达后| RECEIPT
-    RECEIPT --> SUMMARY
-    SUMMARY --> GROUP
-    GROUP -->|共享 / 撤回 / 遗忘增量| CACHE
-    SUMMARY --> CLOUD
-    INPUT -.-> CLOUD
-    INPUT -.-> LOCAL
-    ANSWER --> CLOUD
-    ANSWER -.-> LOCAL
-    WEB -.-> PRIVATE
-    WEB -.-> WORK
-```
-
-私人对话、群聊原文、共享摘要与工程记录分别保存。图中的 QQ 连接来自 Windows 迁移包；Windows 本地模型为可选能力，本次社交整合使用云端模型测试。[架构详解与代码入口](docs/ARCHITECTURE.md) · [Mac 社交服务](docs/SOCIAL_MEMORY.md) · [Windows 接入](windows/docs/SOCIAL_MEMORY.md)。
+> [!IMPORTANT]
+> ## 项目整体架构
+>
+> 当前架构 · 2026-10-18。桌面陪伴、群聊社交与工作执行通过明确的上下文和回执连接：
+>
+> ```mermaid
+> flowchart TB
+>     subgraph ENTRY["交互入口"]
+>         PET["桌宠窗口<br/>macOS Swift / WebKit · Windows Electron"]
+>         WX["微信私聊<br/>文字 / 语音"]
+>         QQ["Windows QQ 群机器人<br/>现有迁移包 + 渠道适配"]
+>         WEB["网页管理<br/>配置 · 记忆 · 项目"]
+>     end
+>
+>     subgraph COMPANION["本机陪伴与工作后端"]
+>         INPUT["输入处理<br/>文字 · ASR · 可选唤醒 / 图像观察"]
+>         ROUTE{"聊天 / 工作"}
+>         CONTEXT["上下文组装<br/>近期对话 · 相关记忆 · 情绪 · 社交来源"]
+>         PRIVATE[("私人 SQLite<br/>对话 · 长期记忆 · 情绪")]
+>         ANSWER["对话与回应<br/>文字 · TTS · 角色动作"]
+>         CONFIRM["任务卡 · 用户确认"]
+>         WORK["T3 Code / Flow 工作台<br/>Codex · DeepSeek Harness"]
+>         PROJECT[("项目索引 / 工作记录")]
+>     end
+>
+>     subgraph SOCIAL["独立角色社交服务"]
+>         RECEIPT["实际回复 + 发送回执<br/>持久队列 · 幂等去重"]
+>         SUMMARY["云端社交摘要<br/>保留群 · 成员 · 时间 · 来源"]
+>         GROUP[("群聊库<br/>事件 · 回执 · 摘要 · 共享策略")]
+>         CACHE[("桌宠社交缓存<br/>15 秒同步 · 5 分钟过期停用")]
+>     end
+>
+>     subgraph SERVICES["模型与检索能力"]
+>         CLOUD["可配置云端模型<br/>对话 · ASR / TTS · 图像 · 结构化记忆"]
+>         LOCAL["Windows 可选本地模型<br/>ASR · TTS · Ollama 对话"]
+>         SEARCH["QQ 检索<br/>项目代码索引 · 联网搜索 · 天气"]
+>     end
+>
+>     PET --> INPUT
+>     WX --> INPUT
+>     INPUT --> ROUTE
+>     ROUTE -->|聊天| CONTEXT
+>     PRIVATE --> CONTEXT
+>     CACHE -->|仅允许共享的摘要| CONTEXT
+>     CONTEXT --> ANSWER
+>     ANSWER --> PET
+>     ANSWER --> WX
+>     ANSWER -.后台记忆整理.-> PRIVATE
+>     ROUTE -->|工作| CONFIRM
+>     CONFIRM --> WORK
+>     WORK <--> PROJECT
+>     WORK -->|状态与结果| PET
+>     QQ <--> SEARCH
+>     QQ --> CLOUD
+>     QQ -->|成功送达后| RECEIPT
+>     RECEIPT --> SUMMARY
+>     SUMMARY --> GROUP
+>     GROUP -->|共享 / 撤回 / 遗忘增量| CACHE
+>     SUMMARY --> CLOUD
+>     INPUT -.-> CLOUD
+>     INPUT -.-> LOCAL
+>     ANSWER --> CLOUD
+>     ANSWER -.-> LOCAL
+>     WEB -.-> PRIVATE
+>     WEB -.-> WORK
+> ```
+>
+> 私人对话、群聊原文、共享摘要与工程记录分别保存。图中的 QQ 连接来自 Windows 迁移包；Windows 本地模型为可选能力，本次社交整合使用云端模型测试。[架构详解与代码入口](docs/ARCHITECTURE.md) · [Mac 社交服务](docs/SOCIAL_MEMORY.md) · [Windows 接入](windows/docs/SOCIAL_MEMORY.md)。
 
 ## Windows 更新 · QQ 机器人与桌宠记忆整合 · 2026-10-18
 
@@ -143,16 +153,7 @@ Mac 已同步交接包中的工作台与 Codex / DeepSeek Harness 连接；Windo
 
 ---
 
-<div align="center">
-  <img src="assets/original-design/whale-avatar.png" width="144" alt="AAAAGENT 鲸鱼娘角色设计" />
-  <h1>AAAAGENT</h1>
-  <p><strong><a href="https://www.bilibili.com/video/BV1cueG6sE85/">▶ 观看完整演示 · 哔哩哔哩</a></strong></p>
-  <p>会聊天、记得相处，也能把想法交给工作 Agent。</p>
-  <p><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
-  <p><a href="docs/PLATFORMS.md">Mac / Windows</a> · <a href="docs/SETUP.md">开始使用</a> · <a href="docs/MEMORY.md">记忆与上下文</a> · <a href="docs/SOCIAL_MEMORY.md">角色社交</a> · <a href="docs/PROMPT_REFERENCES.md">提示词与社区参考</a> · <a href="docs/LIVE2D.md">接入自己的 Live2D</a> · <a href="assets/original-design/README.md">DeepSeek 大肥鱼设计稿</a></p>
-</div>
-
-> [!IMPORTANT]
+> [!NOTE]
 > **「大鲸鱼 DeepSeek」Live2D 模型仍在制作，当前桌宠与版本进展见[更新说明](docs/V2_RELEASE_UPDATE.md)。**
 >
 > 目前使用、视频中展示的是**量贩式购买的第三方 Live2D 模型**（[B站搜索「Live2D量贩」](https://search.bilibili.com/all?vt=35099468&amp;keyword=live2d%E9%87%8F%E8%B4%A9&amp;search_source=1&amp;from_source=web_recommend_search)）。原作者的授权不允许二次转发，因此不随本项目提供模型、纹理、表情和动作文件。
