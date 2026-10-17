@@ -11,6 +11,7 @@ import { MEMORY_MAINTENANCE_PROMPT } from './memory-prompt.js';
 import { PRESENTATION_PRESET_IDS } from '../contracts/presentation.js';
 
 import { normalizeSpokenText } from './spoken-text.js';
+import type { SocialContextPort } from '../companion/cloud/protocol.js';
 
 
 function expression(raw: unknown): ExpressionIntent {
@@ -24,11 +25,12 @@ export class JsonDialogueProvider implements DialogueProvider {
   constructor(private readonly config: EndpointConfig, private readonly transport = new ProviderTransport(),
     private readonly visualPolicy?: () => { presets: readonly { id: string; label: string }[] },
     private readonly clock: () => ReturnType<typeof hostClock> = hostClock,
-    private readonly requestOptions: DialogueRequestOptions = {}) {}
+    private readonly requestOptions: DialogueRequestOptions = {}, private readonly social?: SocialContextPort) {}
   private readonly frames=new Map<string,{input:Omit<DialogueRequest,'context'>;frame:DialogueRequestFrame}>();
   prepare(input:Omit<DialogueRequest,'context'>):void {
     const key=JSON.stringify(input.scope);
-    this.frames.delete(key);this.frames.set(key,{input:structuredClone(input),frame:{now:this.clock(),...(this.visualPolicy?{visual:structuredClone(this.visualPolicy())}:{})}});
+    const reference=this.social?.capture(input.scope.characterId);
+    this.frames.delete(key);this.frames.set(key,{input:structuredClone(input),frame:{now:this.clock(),...(reference?{social:structuredClone(reference)}:{}),...(this.visualPolicy?{visual:structuredClone(this.visualPolicy())}:{})}});
     if(this.frames.size>64)this.frames.delete(this.frames.keys().next().value!);
   }
   private frame(scope:DialogueRequest['scope'],text:string) {
@@ -55,8 +57,11 @@ export class JsonDialogueProvider implements DialogueProvider {
     const built=buildDialogueRequest(input,this.config,this.frame(input.scope,input.text).frame,this.requestOptions);
     if(countRequestInput({...built.body,model:this.config.model})>input.context.inputTokenBudget)throw Error('required_context_exceeds_budget');
     const {forgetting}=built;
+    const reference=this.frame(input.scope,input.text).frame.social;
+    if(reference&&!forgetting)this.social?.assertCurrent(reference);
     const raw = await this.transport.request(this.config, input.scope, 'dialogue', built.body, signal);
     checkAbort(signal);
+    if(reference&&!forgetting)this.social?.assertCurrent(reference);
     const reply = parseModelJson(completedText(raw)), text = normalizeSpokenText(string(reply.text), built.currentMessage);
     const intent = expression(reply.expression);
     const emotionAssessment = forgetting ? undefined : parseEmotionAssessment(reply.emotionAssessment,input);

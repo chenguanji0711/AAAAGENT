@@ -1,10 +1,12 @@
 # Social roles and companion memory
 
+**Windows update, 2026-10-18:** The independent Windows source now connects the existing QQ bot bundle to the companion cache and a current-user login task. See [Windows integration and validation](../windows/docs/SOCIAL_MEMORY.md). New WeChat group adapters and remote deployment remain unverified.
+
 [English home](../README.en.md) · [中文说明](SOCIAL_MEMORY.md) · [HTTP protocol](SOCIAL_PROTOCOL.md#english)
 
 A separate role service can participate in group conversations and bring permitted social summaries back to the desktop companion. Each service has a stable role ID. Sharing is configured per group, with private conversation, group records and summary caches stored separately.
 
-**Current scope:** the root macOS source includes the optional desktop connection, service, local demo and deployment templates. A local real-model reply, delivery receipt, desktop cache synchronization and retraction have been verified. Real QQ/WeChat channel adapters, remote deployment, the Windows companion connection and login startup remain pending. Existing WeChat private chat keeps its own connection.
+**Current scope:** the root macOS source includes the optional desktop connection, service, local demo and deployment templates. A local real-model reply, delivery receipt, desktop cache synchronization and retraction have been verified. Windows now connects the existing QQ bundle, companion cache and current-user login task; see the [Windows guide](../windows/docs/SOCIAL_MEMORY.md). New WeChat group adapters and remote deployment remain unverified. Existing WeChat private chat keeps its own connection.
 
 ## Architecture and memory
 
@@ -126,6 +128,6 @@ After compiling, run synthetic checks for isolation, delivery, deduplication, re
 node --test dist/tests/companion/cloud.test.js tools/pet-cloud/package-smoke.mjs
 ```
 
-Code: [`companion/cloud/`](../code/desktop-pet/companion/cloud/), [`trial-backend.ts`](../code/desktop-pet/app/trial-backend.ts) and [`dialogue-request.ts`](../code/desktop-pet/providers/dialogue-request.ts). The separate Windows desktop connection awaits porting; its existing local-model extensions remain intact.
+Code: [`companion/cloud/`](../code/desktop-pet/companion/cloud/), [`trial-backend.ts`](../code/desktop-pet/app/trial-backend.ts) and [`dialogue-request.ts`](../code/desktop-pet/providers/dialogue-request.ts). The separate Windows source now includes the optional connection while preserving its local-model extensions; its additional confirmed-participation endpoint, background tasks and permission handling are covered in the [Windows guide](../windows/docs/SOCIAL_MEMORY.md).
 
 The public source passed full TypeScript compilation and **48 checks** across social behavior, connection paths, dialogue and context. The synthetic demo covers disconnection, restart and retraction; real group channels and remote deployment await separate validation.

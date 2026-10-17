@@ -1,5 +1,9 @@
 # AAAAGENT Windows 0.3.0-dev.1
 
+## QQ bot and companion memory · 2026-10-18
+
+Windows now supports receipt-backed QQ summaries, companion synchronization and a login background service. Validation used six real cloud calls and zero local-model calls; QQ delivery receipts were synthetic. [Release notes](docs/WINDOWS-20261018.md) · [Setup](docs/SOCIAL_MEMORY.md) · [Architecture](../docs/ARCHITECTURE.md)
+
 This is a **source development candidate, not a stable release or a signed installer**. It integrates video / Live2D switching, a separate T3 workbench, three ASR and three TTS options, and opt-in local foreground dialogue through Ollama. The October 10, 2026 checks include both successful paths and unresolved failures.
 
 [中文](README.md) · [Project home](../README.en.md) · [Platform differences](../docs/PLATFORMS.md#english) · [Third-party sources and notices](THIRD_PARTY_NOTICES.md)

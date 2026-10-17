@@ -1,5 +1,9 @@
 # AAAAGENT Windows 0.3.0-dev.1
 
+## QQ 机器人与桌宠记忆 · 2026-10-18
+
+新增 QQ 回执桥接、云端社交摘要、桌宠增量同步及 Windows 登录后台服务。[更新公告](docs/WINDOWS-20261018.md) · [安装与启停](docs/SOCIAL_MEMORY.md) · [项目架构](../docs/ARCHITECTURE.md)
+
 Windows 源码候选版，**不是稳定版，也没有签名安装包**。本版接入视频桌宠 / Live2D 切换、独立 T3 工作台、三种 ASR、三种 TTS，以及默认关闭的 Ollama 本地前台对话。2026-10-10 的分阶段测试有通过项，也有未解决的模型质量与后台记忆问题。
 
 [English](README.en.md) · [项目首页](../README.md) · [平台差异](../docs/PLATFORMS.md) · [第三方来源与许可](THIRD_PARTY_NOTICES.md)

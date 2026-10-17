@@ -4,7 +4,7 @@
 
 桌宠可以使用一个独立的角色服务参与群聊，并把允许共享的社交摘要带回私人对话。每个服务有稳定的角色 ID，每个群分别选择是否共享。私人聊天、群聊原文和社交摘要分别保存。
 
-**当前范围：**根目录 Mac 版已接入可选社交连接；独立服务、联调页面和部署模板随源码提供。已在本机验证真实模型回复、发送回执到摘要缓存的链路和撤回。QQ／微信真实群渠道、远程主机部署、Windows 桌宠接线及开机自启仍待接入。仓库原有微信私聊功能继续使用自己的连接。
+**当前范围：**根目录 Mac 版已接入可选社交连接；独立服务、联调页面和部署模板随源码提供。已在本机验证真实模型回复、发送回执到摘要缓存的链路和撤回。Windows 已接入现有 QQ 迁移包、桌宠缓存和当前用户登录后台任务，见 [Windows 接入与验证](../windows/docs/SOCIAL_MEMORY.md)。新微信群渠道与远程主机部署仍待验证。仓库原有微信私聊功能继续使用自己的连接。
 
 ## 架构与记忆
 
@@ -126,6 +126,6 @@ Compose 将端口限制在宿主机回环地址；跨机器使用时在前面配
 node --test dist/tests/companion/cloud.test.js tools/pet-cloud/package-smoke.mjs
 ```
 
-源码入口：[`companion/cloud/`](../code/desktop-pet/companion/cloud/)、[`trial-backend.ts`](../code/desktop-pet/app/trial-backend.ts)、[`dialogue-request.ts`](../code/desktop-pet/providers/dialogue-request.ts)。Windows 独立桌宠目录的接线留待移植，已有 Windows 本地模型扩展保留。
+源码入口：[`companion/cloud/`](../code/desktop-pet/companion/cloud/)、[`trial-backend.ts`](../code/desktop-pet/app/trial-backend.ts)、[`dialogue-request.ts`](../code/desktop-pet/providers/dialogue-request.ts)。Windows 独立目录已经完成可选社交接线，保留原有本地模型扩展；额外的 QQ 已送达参与接口、后台任务和权限适配见 [Windows 社交说明](../windows/docs/SOCIAL_MEMORY.md)。
 
 本次公开副本完整 TypeScript 编译通过，社交、连接路径、对话与上下文共 **48 项检查通过**。合成演示覆盖断线、重启与撤回；真实群聊和远程部署留待各渠道验证。

@@ -1,5 +1,6 @@
 import { LocalAsrProvider, LocalTtsProvider } from '../providers/local-speech.js';
 import { selectTrialDialogue } from './dialogue-selection.js';
+import { openLocalSocialConnection, type LocalSocialConnection } from '../companion/cloud/local.js';
 import { isOutside, isPrivateFileSync } from '../core/platform-files.js';
 import { countRequestInput,inputBudgetInfo,DEFAULT_CURRENT_EMOTION_RESERVE_TOKENS } from '../providers/input-count.js';
 import { normalizeApiKey, MAX_API_KEY_FILE_BYTES } from '../core/api-key.js';
@@ -232,6 +233,7 @@ export async function startTrialBackend(environment: NodeJS.ProcessEnv = process
   let wechat: WeChatService | undefined;
   let wake: WakeManager | undefined;
   let managementForget: StrictManagementForget | undefined;
+  let socialConnection: LocalSocialConnection | undefined;
   let memoryImport: SqliteMemoryImportManagement | undefined;
   let desktopWork: import('../contracts/desktop-work.js').DesktopWorkPort | undefined;
   let desktopWorkbench: DesktopWorkbench | undefined;
@@ -284,8 +286,10 @@ export async function startTrialBackend(environment: NodeJS.ProcessEnv = process
     }
     const presentation = await PresentationSettingsStore.open(resolve(configuration.projectRoot, '.local/data/presentation-settings.json'),
       await readPresentationCatalog(configuration.projectRoot), policy => process.stdout.write(JSON.stringify({ channel: 'presentation_policy', policy }) + '\n'));
+    try { if(configuration.purpose==='user-trial')socialConnection=openLocalSocialConnection(configuration.projectRoot); }
+    catch { process.stderr.write('Social memory connection unavailable; private companion memory remains available.\n'); }
     const {dialogue,foregroundBudget}=selectTrialDialogue(configuration,()=>endpoint('dialogue'),transport,
-      ()=>presentation.allowedIntent(),settings.effective.context.targetInputTokens,settings.effective.providers.dialogue.temperature);
+      ()=>presentation.allowedIntent(),settings.effective.context.targetInputTokens,settings.effective.providers.dialogue.temperature,undefined,socialConnection);
     const strictProvider=new StrictTrialMemoryProvider(store, endpoint('memory_turn'), transport, configuration.phaseId, evidence, configuration.models.memory_turn.thinking);
     const memory = new ObservedTrialMemory(store, {
       context: { inputTokenBudget: foregroundBudget.effectiveInputTokens,budgetInfo:foregroundBudget,currentEmotionReserveTokens:settings.effective.context.currentEmotionReserveTokens??DEFAULT_CURRENT_EMOTION_RESERVE_TOKENS, maxRecentMessages: settings.effective.context.maxRecentMessages, maxMemories: settings.effective.context.maxMemories,
@@ -434,7 +438,7 @@ export async function startTrialBackend(environment: NodeJS.ProcessEnv = process
       if (stopping) return; stopping = true; clearInterval(cleanupTimer); lines.close(); process.stdin.pause();
       managementForget?.close();
       try { await wake?.close(); await wechat?.close(); await desktopWork?.close(); await desktopWorkbench?.close(); await management?.close(); await managementForget?.drain(); await settings.drain(); await presentation.drain(); }
-      finally { try { await session!.close(); } finally { await release(); } }
+      finally { try { await session!.close(); } finally { try { await socialConnection?.close(); } finally { await release(); } } }
     };
     let submitted = false;
     lines.on('line', line => {
@@ -457,7 +461,7 @@ export async function startTrialBackend(environment: NodeJS.ProcessEnv = process
     await wake?.close(); await wechat?.close(); await desktopWorkbench?.close(); await management?.close(); await managementForget?.drain();
     await memoryImport?.close();
     if (session) await session.close(); else store?.close();
-    await release(); throw error;
+    try { await socialConnection?.close(); } finally { await release(); } throw error;
   }
 }
 

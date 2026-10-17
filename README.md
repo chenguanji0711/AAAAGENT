@@ -1,6 +1,85 @@
+# AAAAGENT · 项目整体架构
+
+当前架构 · 2026-10-18。桌面陪伴、群聊社交与工作执行通过明确的上下文和回执连接：
+
+```mermaid
+flowchart TB
+    subgraph ENTRY["交互入口"]
+        PET["桌宠窗口<br/>macOS Swift / WebKit · Windows Electron"]
+        WX["微信私聊<br/>文字 / 语音"]
+        QQ["Windows QQ 群机器人<br/>现有迁移包 + 渠道适配"]
+        WEB["网页管理<br/>配置 · 记忆 · 项目"]
+    end
+
+    subgraph COMPANION["本机陪伴与工作后端"]
+        INPUT["输入处理<br/>文字 · ASR · 可选唤醒 / 图像观察"]
+        ROUTE{"聊天 / 工作"}
+        CONTEXT["上下文组装<br/>近期对话 · 相关记忆 · 情绪 · 社交来源"]
+        PRIVATE[("私人 SQLite<br/>对话 · 长期记忆 · 情绪")]
+        ANSWER["对话与回应<br/>文字 · TTS · 角色动作"]
+        CONFIRM["任务卡 · 用户确认"]
+        WORK["T3 Code / Flow 工作台<br/>Codex · DeepSeek Harness"]
+        PROJECT[("项目索引 / 工作记录")]
+    end
+
+    subgraph SOCIAL["独立角色社交服务"]
+        RECEIPT["实际回复 + 发送回执<br/>持久队列 · 幂等去重"]
+        SUMMARY["云端社交摘要<br/>保留群 · 成员 · 时间 · 来源"]
+        GROUP[("群聊库<br/>事件 · 回执 · 摘要 · 共享策略")]
+        CACHE[("桌宠社交缓存<br/>15 秒同步 · 5 分钟过期停用")]
+    end
+
+    subgraph SERVICES["模型与检索能力"]
+        CLOUD["可配置云端模型<br/>对话 · ASR / TTS · 图像 · 结构化记忆"]
+        LOCAL["Windows 可选本地模型<br/>ASR · TTS · Ollama 对话"]
+        SEARCH["QQ 检索<br/>项目代码索引 · 联网搜索 · 天气"]
+    end
+
+    PET --> INPUT
+    WX --> INPUT
+    INPUT --> ROUTE
+    ROUTE -->|聊天| CONTEXT
+    PRIVATE --> CONTEXT
+    CACHE -->|仅允许共享的摘要| CONTEXT
+    CONTEXT --> ANSWER
+    ANSWER --> PET
+    ANSWER --> WX
+    ANSWER -.后台记忆整理.-> PRIVATE
+    ROUTE -->|工作| CONFIRM
+    CONFIRM --> WORK
+    WORK <--> PROJECT
+    WORK -->|状态与结果| PET
+    QQ <--> SEARCH
+    QQ --> CLOUD
+    QQ -->|成功送达后| RECEIPT
+    RECEIPT --> SUMMARY
+    SUMMARY --> GROUP
+    GROUP -->|共享 / 撤回 / 遗忘增量| CACHE
+    SUMMARY --> CLOUD
+    INPUT -.-> CLOUD
+    INPUT -.-> LOCAL
+    ANSWER --> CLOUD
+    ANSWER -.-> LOCAL
+    WEB -.-> PRIVATE
+    WEB -.-> WORK
+```
+
+私人对话、群聊原文、共享摘要与工程记录分别保存。图中的 QQ 连接来自 Windows 迁移包；Windows 本地模型为可选能力，本次社交整合使用云端模型测试。[架构详解与代码入口](docs/ARCHITECTURE.md) · [Mac 社交服务](docs/SOCIAL_MEMORY.md) · [Windows 接入](windows/docs/SOCIAL_MEMORY.md)。
+
+## Windows 更新 · QQ 机器人与桌宠记忆整合 · 2026-10-18
+
+- QQ 机器人取得实际发送回执后，将本轮交流交给独立社交服务生成摘要；队列持久化、重复事件去重，重试同步不会再次发送 QQ 回复。
+- Windows 桌宠每 15 秒增量同步允许共享的摘要，保留群、成员、时间和来源；关闭共享及遗忘会传播到缓存，五分钟不同步时暂停引用。
+- 增加 Windows 登录后台任务、进程恢复与管理命令，使用 Windows SID ACL 保护配置和数据；模型密钥引用现有私有文件。
+- Windows 真实云端 DeepSeek 联调完成 6 次调用，本地模型调用为 0；QQ 发送端使用模拟回执，真实群投递仍需自然新消息确认。
+
+[完整更新公告与验证范围](windows/docs/WINDOWS-20261018.md) · [安装与启停](windows/docs/SOCIAL_MEMORY.md) · [Windows 更新记录](windows/CHANGELOG-WINDOWS.md)
+
+---
+
 ## 角色社交与桌宠记忆 · 2026-10-15
 
-桌宠现在可以连接独立角色服务，按群选择共享社交摘要，在私人对话中回想角色自己的群聊经历。私人库、群聊库和摘要缓存分别保存；支持断线补齐、共享撤回和带来源的遗忘。Mac 本机已跑通真实模型与缓存同步；真实 QQ／微信群适配、远程部署和 Windows 桌宠接线待接入。 [架构、接入与记忆说明](docs/SOCIAL_MEMORY.md)。
+桌宠现在可以连接独立角色服务，按群选择共享社交摘要，在私人对话中回想角色自己的群聊经历。私人库、群聊库和摘要缓存分别保存；支持断线补齐、共享撤回和带来源的遗忘。Mac 本机已跑通真实模型与缓存同步；Windows 已接入现有 QQ 机器人及桌宠缓存，见上方 10 月 18 日公告。新的微信群渠道和远程部署仍待验证。 [架构、接入与记忆说明](docs/SOCIAL_MEMORY.md)。
 
 ---
 
@@ -137,22 +216,7 @@ AAAAGENT 是一个以 macOS 为主要平台、同时提供 Windows 开发版的�
 
 ## 它怎样工作
 
-```mermaid
-flowchart LR
-    U[桌面 / 微信输入] --> I[文字 / 独立语音转写]
-    V[可选视频帧] --> E[有限情绪分类]
-    I --> R{聊天还是工作}
-    E --> C[最近对话 + 摘要 + 相关记忆]
-    R -->|聊天| C
-    C --> L[DeepSeek 对话]
-    L --> O[文字 / 语音 / 角色表现]
-    R -->|工作| P[整理完整任务卡]
-    P --> A[用户确认]
-    A --> W[Harness / Codex]
-    W --> F[任务状态与结果反馈]
-    L -.后台整理.-> M[本地记忆库]
-    M --> C
-```
+完整架构已移到本页顶部，模块说明及代码入口见[项目架构](docs/ARCHITECTURE.md)。
 
 DeepSeek 负责文字对话及相关结构化处理；独立 ASR 负责忠实转写，Qwen 多模态适配器负责图像理解，MiniMax 适配器负责 TTS。模型和服务凭据由使用者配置。项目复用已有的 Harness 服务和 Codex 连接能力，不内置另一套大型 Agent 平台。
 

@@ -20,6 +20,7 @@
     "configure": "node tools/configure-local.mjs",
     "build:windows": "npm run build && npm run build:desktop && npm run build:wake && npm run build:native",
     "test:windows": "npm run build && node tools/run-tests.mjs windows",
+    "test:social": "npm run build && node --test --test-concurrency=1 dist/tests/companion/cloud.test.js dist/tests/companion/social-participation.test.js tools/pet-cloud/package-smoke.mjs",
     "test:stress": "npm run build && node --test --test-concurrency=1 tests/windows-stress.test.mjs",
     "test:windows:ui": "npm run build && npm run build:desktop && node tools/dev-desktop.mjs --smoke-test",
     "refresh:runtime": "node tools/refresh-runtime.mjs",

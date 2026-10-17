@@ -1,6 +1,85 @@
+# AAAAGENT · Project architecture
+
+Current architecture · October 18, 2026. Companion dialogue, group activity and work execution connect through explicit context and delivery receipts:
+
+```mermaid
+flowchart TB
+    subgraph ENTRY["Interaction channels"]
+        PET["Desktop companion<br/>macOS Swift / WebKit · Windows Electron"]
+        WX["WeChat private chat<br/>Text / voice"]
+        QQ["Windows QQ group bot<br/>Existing migration bundle + bridge"]
+        WEB["Web management<br/>Configuration · memory · projects"]
+    end
+
+    subgraph COMPANION["Local companion and work backend"]
+        INPUT["Input processing<br/>Text · ASR · optional wake / vision"]
+        ROUTE{"Chat / work"}
+        CONTEXT["Context assembly<br/>Recent turns · memories · emotions · social sources"]
+        PRIVATE[("Private SQLite<br/>Dialogue · long-term memory · emotions")]
+        ANSWER["Dialogue and response<br/>Text · TTS · character actions"]
+        CONFIRM["Task card · user confirmation"]
+        WORK["T3 Code / Flow workbench<br/>Codex · DeepSeek Harness"]
+        PROJECT[("Project index / work records")]
+    end
+
+    subgraph SOCIAL["Independent social-role service"]
+        RECEIPT["Actual reply + delivery receipt<br/>Durable queue · idempotent deduplication"]
+        SUMMARY["Cloud social summaries<br/>Group · member · time · sources"]
+        GROUP[("Group database<br/>Events · receipts · summaries · sharing policy")]
+        CACHE[("Companion social cache<br/>15-second sync · 5-minute freshness limit")]
+    end
+
+    subgraph SERVICES["Models and retrieval"]
+        CLOUD["Configured cloud models<br/>Dialogue · ASR / TTS · vision · structured memory"]
+        LOCAL["Optional Windows local models<br/>ASR · TTS · Ollama dialogue"]
+        SEARCH["QQ retrieval<br/>Project code index · web search · weather"]
+    end
+
+    PET --> INPUT
+    WX --> INPUT
+    INPUT --> ROUTE
+    ROUTE -->|Chat| CONTEXT
+    PRIVATE --> CONTEXT
+    CACHE -->|Permitted summaries only| CONTEXT
+    CONTEXT --> ANSWER
+    ANSWER --> PET
+    ANSWER --> WX
+    ANSWER -.Background memory maintenance.-> PRIVATE
+    ROUTE -->|Work| CONFIRM
+    CONFIRM --> WORK
+    WORK <--> PROJECT
+    WORK -->|Status and results| PET
+    QQ <--> SEARCH
+    QQ --> CLOUD
+    QQ -->|After confirmed delivery| RECEIPT
+    RECEIPT --> SUMMARY
+    SUMMARY --> GROUP
+    GROUP -->|Sharing / revocation / forgetting updates| CACHE
+    SUMMARY --> CLOUD
+    INPUT -.-> CLOUD
+    INPUT -.-> LOCAL
+    ANSWER --> CLOUD
+    ANSWER -.-> LOCAL
+    WEB -.-> PRIVATE
+    WEB -.-> WORK
+```
+
+Private dialogue, raw group events, shared summaries and engineering records use separate stores. QQ integration requires the existing Windows bot bundle. Windows local models remain optional; this social-integration validation used cloud models. [Architecture and source map](docs/ARCHITECTURE.md) · [Mac social setup](docs/SOCIAL_MEMORY.en.md) · [Windows integration](windows/docs/SOCIAL_MEMORY.md).
+
+## Windows update · QQ bot and companion memory · 2026-10-18
+
+- Confirmed QQ delivery receipts feed a durable, deduplicated summary queue. Synchronization retries do not send another QQ reply.
+- The Windows companion pulls permitted summaries every 15 seconds, preserving group, participant, time and source attribution. Sharing revocation and forgetting propagate; stale caches stop contributing after five minutes.
+- Windows login tasks, process recovery and management scripts protect configuration and data with SID-based ACLs and reference existing private model credentials.
+- Six real cloud DeepSeek calls passed, with zero local-model calls. QQ delivery used synthetic receipts; real group delivery still needs a natural incoming message.
+
+[Release notes and validation](windows/docs/WINDOWS-20261018.md) · [Setup and operation](windows/docs/SOCIAL_MEMORY.md) · [Windows changelog](windows/CHANGELOG-WINDOWS.md)
+
+---
+
 ## Social roles and companion memory · 2026-10-15
 
-The Mac companion can connect to an independent role service and recall permitted group experiences in private dialogue. Private memory, group records and summary caches remain separate, with recovery, sharing revocation and sourced forgetting. Local real-model and cache synchronization checks have passed; real QQ/WeChat group adapters, remote deployment and the Windows companion connection are pending. [Architecture, setup and memory guide](docs/SOCIAL_MEMORY.en.md).
+The Mac companion can connect to an independent role service and recall permitted group experiences in private dialogue. Private memory, group records and summary caches remain separate, with recovery, sharing revocation and sourced forgetting. Local real-model and cache synchronization checks have passed. Windows now connects the existing QQ bot to the companion cache; see the October 18 update above. New WeChat group adapters and remote deployment remain unverified. [Architecture, setup and memory guide](docs/SOCIAL_MEMORY.en.md).
 
 ---
 
@@ -135,22 +214,7 @@ If you want a different conversational style, personality or emotional response,
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    U[Desktop / WeChat] --> I[Text / dedicated ASR]
-    V[Optional video frames] --> E[Limited emotion classification]
-    I --> R{Chat or work}
-    E --> C[Recent turns + summaries + relevant memory]
-    R -->|Chat| C
-    C --> L[DeepSeek dialogue]
-    L --> O[Text / speech / presentation]
-    R -->|Work| P[Complete task card]
-    P --> A[User confirmation]
-    A --> W[Harness / Codex]
-    W --> F[Status and result feedback]
-    L -.Background processing.-> M[Local memory store]
-    M --> C
-```
+The complete architecture appears at the top of this page; see the [source map and data boundaries](docs/ARCHITECTURE.md).
 
 DeepSeek handles text dialogue and structured processing. Dedicated ASR supplies the transcript, Qwen multimodal adapters process images, and the MiniMax adapter generates speech. Users supply service configurations and credentials. The application connects to existing Harness and Codex services rather than bundling another agent platform.
 
