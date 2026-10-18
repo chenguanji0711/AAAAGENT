@@ -4,7 +4,7 @@
   <p><strong><a href="https://www.bilibili.com/video/BV1cueG6sE85/">▶ 观看完整演示 · 哔哩哔哩</a></strong></p>
   <p>会聊天、记得相处，也能把想法交给工作 Agent。</p>
   <p><strong>简体中文</strong> · <a href="README.en.md">English</a></p>
-  <p><a href="docs/PLATFORMS.md">Mac / Windows</a> · <a href="docs/SETUP.md">开始使用</a> · <a href="docs/MEMORY.md">记忆与上下文</a> · <a href="docs/SOCIAL_MEMORY.md">角色社交</a> · <a href="docs/PROMPT_REFERENCES.md">提示词与社区参考</a> · <a href="docs/LIVE2D.md">接入自己的 Live2D</a> · <a href="assets/original-design/README.md">DeepSeek 大肥鱼设计稿</a></p>
+  <p><a href="docs/PLATFORMS.md">Mac / Windows</a> · <a href="windows/AGENT_INSTALL.md">Windows Agent 一键安装</a> · <a href="docs/SETUP.md">开始使用</a> · <a href="docs/MEMORY.md">记忆与上下文</a> · <a href="docs/SOCIAL_MEMORY.md">角色社交</a> · <a href="docs/PROMPT_REFERENCES.md">提示词与社区参考</a> · <a href="docs/LIVE2D.md">接入自己的 Live2D</a> · <a href="assets/original-design/README.md">DeepSeek 大肥鱼设计稿</a></p>
 </div>
 
 > [!IMPORTANT]
@@ -232,6 +232,8 @@ DeepSeek 负责文字对话及相关结构化处理；独立 ASR 负责忠实转
 公式、数据流、失败处理和代码入口见 [记忆与上下文](docs/MEMORY.md)。当前检索以关键词和短语匹配为主。
 
 ## 开始使用
+
+**Windows 用户可以把[Agent 安装文档](windows/AGENT_INSTALL.md)直接交给本地编程助手。** 内含可复制请求、一键准备脚本、配置填写位置、启动验证和升级步骤；需要换平台时参照[服务商快速迁移](windows/docs/PROVIDER_MIGRATION.md)。账号、Key 和授权角色素材需自行提供。
 
 **自助配置：** 编译后运行 `npm run configure-local`（Windows 用 `npm.cmd`），即可填写 DeepSeek/百炼 Key、选择已适配模型、上传自己的参考音频。使用前需在百炼开通对应模型并配置 Key。Harness 与 Codex 必须另装、启动并完成登录或配置，缺失时不能向其转发任务。详见[安装与配置](docs/SETUP.md)。
 

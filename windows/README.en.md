@@ -12,6 +12,8 @@ Windows uses the separate `windows/code/desktop-pet/` tree, an Electron window a
 
 ## Getting started
 
+For installation by a local coding agent, use the [agent runbook (中文)](AGENT_INSTALL.md) and `Install-Windows.ps1`. It installs locked dependencies, builds the app and opens first-run setup. Supply your own credentials and licensed assets. The [provider migration guide (中文)](docs/PROVIDER_MIGRATION.md) explains configuration changes versus adapter work for other cloud platforms.
+
 Use Windows x64, Node.js 22.12 or later, and character assets and SDK components you are authorized to use. From the repository root:
 
 ```powershell

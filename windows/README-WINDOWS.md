@@ -1,5 +1,7 @@
 # Windows 0.3.0-dev.1 安装与运行
 
+**想让本地 Agent 帮你装好？** 直接使用[Agent 一键安装文档](AGENT_INSTALL.md)，含可复制请求、`Install-Windows.ps1`、必填配置和验收步骤。更换阿里云或其他默认服务，见[服务商快速迁移](docs/PROVIDER_MIGRATION.md)。下面保留手动安装与可选模块的详细说明。
+
 ## QQ 机器人与桌宠记忆 · 2026-10-18
 
 已接入独立社交服务、QQ 真实发送回执桥接及桌宠摘要同步。[本次公告与验证范围](docs/WINDOWS-20261018.md) · [完整配置与启停](docs/SOCIAL_MEMORY.md)

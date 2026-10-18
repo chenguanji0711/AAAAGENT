@@ -2,6 +2,8 @@
 
 [项目首页](../README.md) · [English](#english)
 
+Windows 用户可直接交给本地助手执行[Agent 安装流程](../AGENT_INSTALL.md)。默认服务并非唯一选择；更换平台的配置范围与具体代码入口见[服务商迁移说明](PROVIDER_MIGRATION.md)。
+
 ## 编译后即可打开首次设置
 
 这是源码开发版。首次设置不要求已有 Key、音色或 JSON 配置；完整桌宠运行仍需自己有权使用的 Live2D 模型、Cubism SDK 和本机应用构建。供应商账户、外部执行器、素材与订阅均不随包提供。

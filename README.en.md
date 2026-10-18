@@ -4,7 +4,7 @@
   <p><strong><a href="https://www.bilibili.com/video/BV1cueG6sE85/">▶ Watch the full demo on Bilibili</a></strong></p>
   <p>A desktop companion that talks, remembers, and connects your ideas to working agents.</p>
   <p><a href="README.md">简体中文</a> · <strong>English</strong></p>
-  <p><a href="docs/PLATFORMS.md#english">Mac / Windows</a> · <a href="docs/SETUP.md">Setup</a> · <a href="docs/MEMORY.md#english">Memory and context</a> · <a href="docs/SOCIAL_MEMORY.en.md">Social roles</a> · <a href="docs/PROMPT_REFERENCES.md#english">Prompt references</a> · <a href="docs/LIVE2D.md#english">Bring your own Live2D</a> · <a href="assets/original-design/README.md#english">Whale-girl artwork</a></p>
+  <p><a href="docs/PLATFORMS.md#english">Mac / Windows</a> · <a href="windows/AGENT_INSTALL.md">Windows agent install (中文)</a> · <a href="docs/SETUP.md">Setup</a> · <a href="docs/MEMORY.md#english">Memory and context</a> · <a href="docs/SOCIAL_MEMORY.en.md">Social roles</a> · <a href="docs/PROMPT_REFERENCES.md#english">Prompt references</a> · <a href="docs/LIVE2D.md#english">Bring your own Live2D</a> · <a href="assets/original-design/README.md#english">Whale-girl artwork</a></p>
 </div>
 
 > [!IMPORTANT]

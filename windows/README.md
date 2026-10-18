@@ -12,6 +12,8 @@ Windows 使用独立的 `windows/code/desktop-pet/` 源码、Electron 窗口和 
 
 ## 开始使用
 
+**交给本地 Agent 安装：** 复制[Agent 安装文档](AGENT_INSTALL.md)中的请求，助手会拉源码、安装依赖、构建并打开设置页，再指导你填写 Key 和准备角色资源。新增 `Install-Windows.ps1` 一键准备入口；需要改用其他云平台时，按[服务商迁移说明](docs/PROVIDER_MIGRATION.md)接入。
+
 准备 Windows x64、Node.js 22.12 或更高版本，以及有权使用的桌宠素材与所需 SDK。从仓库根目录运行：
 
 ```powershell
