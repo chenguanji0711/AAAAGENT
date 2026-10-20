@@ -22,10 +22,33 @@ export function parseModelJson(text: string): JsonRecord {
 /** Status and validated request identity only; never retain supplier body or URL. */
 export class ProviderHttpError extends Error {
   readonly requestId: string | null;
-  constructor(readonly status: number, readonly operation: ProviderOperation, requestId: string | null) {
+  constructor(readonly status: number, readonly operation: ProviderOperation, requestId: string | null,
+    readonly providerCode: string | null = null) {
     super(`Provider HTTP ${status}`); this.name = 'ProviderHttpError';
     this.requestId = requestId && /^[A-Za-z0-9_-]{1,128}$/.test(requestId) ? requestId : null;
   }
+}
+
+/** Only a short machine-readable code may cross into the UI; provider messages can echo private prompts. */
+async function readProviderErrorCode(response: Response, signal: AbortSignal): Promise<string | null> {
+  if (!response.body) return null;
+  const reader = response.body.getReader(), decoder = new TextDecoder();
+  let body = '', size = 0;
+  try {
+    while (true) {
+      const chunk = await abortable(reader.read(), signal);
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > 8192) return null;
+      body += decoder.decode(chunk.value, { stream: true });
+    }
+    body += decoder.decode();
+    const parsed = object(JSON.parse(body));
+    const error = parsed.error && typeof parsed.error === 'object' ? object(parsed.error) : parsed;
+    const code = error.code;
+    return typeof code === 'string' && /^[A-Za-z][A-Za-z0-9_.-]{0,79}$/.test(code) ? code : null;
+  } catch { return null; }
+  finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
 export interface ProviderRequestDiagnostic {
@@ -44,7 +67,7 @@ export class ProviderRequestFailure extends Error {
 
 export class ProviderTransport {
   constructor(private readonly fetcher: typeof fetch = fetch) {}
-  async request(config: EndpointConfig, scope: TurnScope, operation: ProviderOperation, body: JsonRecord, signal: AbortSignal, textCharacters?: number, audioSeconds?: number): Promise<JsonRecord> {
+  async request(config: EndpointConfig, scope: TurnScope, operation: ProviderOperation, body: JsonRecord, signal: AbortSignal, textCharacters?: number, audioSeconds?: number, onContent?: (content: string) => void): Promise<JsonRecord> {
     checkAbort(signal);
     const endpoint = new URL(config.endpoint);
     if (endpoint.protocol !== 'https:' || endpoint.username || endpoint.password || endpoint.search || endpoint.hash || !config.model) throw new Error('Explicit HTTPS provider endpoint and model required');
@@ -63,9 +86,8 @@ export class ProviderTransport {
       trace.phase = 'response_status';
       checkAbort(signal);
       if (!response.ok) {
-        // Release the failed response before any narrowly permitted caller recovery.
-        await response.body?.cancel().catch(() => {});
-        throw new ProviderHttpError(response.status, operation, outcome.requestId);
+        const code = await readProviderErrorCode(response, signal);
+        throw new ProviderHttpError(response.status, operation, outcome.requestId, code);
       }
       trace.phase = body.stream === true ? 'response_stream' : 'response_body';
       let result: JsonRecord;
@@ -73,7 +95,7 @@ export class ProviderTransport {
         // Keep the existing non-streaming wire; distinguish byte collection from JSON decoding.
         const text = await response.text(); trace.responseBodyComplete = true; trace.responseBodyUtf8Bytes = Buffer.byteLength(text,'utf8');
         checkAbort(signal); trace.phase = 'response_parse'; result = object(JSON.parse(text));
-      } else result = body.stream === true ? await this.readCompletion(response, signal) : object(await response.json());
+      } else result = body.stream === true ? await this.readCompletion(response, signal, onContent) : object(await response.json());
       checkAbort(signal);
       outcome = { status: 'success', usage: result.usage ?? null, requestId: typeof result.request_id === 'string' ? result.request_id : outcome.requestId };
       return result;
@@ -99,7 +121,7 @@ export class ProviderTransport {
     if (!response.ok) throw new Error(`Audio download HTTP ${response.status}`);
     const bytes = new Uint8Array(await response.arrayBuffer()); checkAbort(signal); return bytes;
   }
-  private async readCompletion(response: Response, signal: AbortSignal): Promise<JsonRecord> {
+  private async readCompletion(response: Response, signal: AbortSignal, onContent?: (content: string) => void): Promise<JsonRecord> {
     if (!response.body) throw new Error('Provider returned no stream');
     const reader = response.body.getReader(), decoder = new TextDecoder();
     let pending = '', content = '', usage: unknown = null, requestId: unknown = null, finished = false;
@@ -112,7 +134,7 @@ export class ProviderTransport {
       if (chunk.id) requestId = chunk.id;
       if (Array.isArray(chunk.choices)) for (const raw of chunk.choices) {
         const choice = object(raw), delta = object(choice.delta ?? {});
-        if (typeof delta.content === 'string') content += delta.content;
+        if (typeof delta.content === 'string') { content += delta.content; onContent?.(content); }
         if (choice.finish_reason === 'length') throw new Error('Provider output was truncated');
         if (choice.finish_reason === 'stop') finished = true;
       }

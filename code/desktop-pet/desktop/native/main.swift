@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import AVFoundation
 
 // All state and callbacks run on the main queue. Pipe I/O is nonblocking so a
 // backend that stops reading cannot freeze the window or prevent cancellation.
@@ -278,10 +279,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
     var web: WKWebView!
     var viewportClip: NSView!
     var modelScreenFrame: CGRect?
+    // Preserve user intent separately from screen-fitting results.
+    var desiredModelTop: CGPoint?
+    var desiredBallTop: CGPoint?
     var collapsedScreenFrame: CGRect?
     let connection = BackendConnection()
     let managementLauncher = ManagementPageLauncher()
     let displayPreferences = PetDisplayPreferences()
+    var speechVisible = true
+    var speechHeight = 84.0
+    var quickHeight = 56.0
     var displayOpen = false
     var displayCollapsed = false
     var applyingDisplay = false
@@ -303,6 +310,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
         }
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
+        diagnostic("device-authorization", ["microphone": AVCaptureDevice.authorizationStatus(for: .audio).rawValue,
+            "camera": AVCaptureDevice.authorizationStatus(for: .video).rawValue])
         guard let root = option("--root") else { diagnostic("missing-root"); NSApp.terminate(nil); return }
         sourceRoot = URL(fileURLWithPath: root, isDirectory: true).standardizedFileURL
         if let kind = option("--renderer"), ["video", "live2d"].contains(kind) { rendererKind = kind }
@@ -380,11 +389,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
         let path = option("--backend")
         connection.start(executable: path == nil ? nil : option("--node") ?? "/opt/homebrew/bin/node", arguments: path.map { [$0] } ?? [])
     }
+    /// The settings the page and the renderer share: five normalised knobs plus the chosen behaviour.
+    func deliverMotionConfig() {
+        var payload = MotionPreferences.load().dictionary
+        payload["animation"] = MotionPreferences.loadAnimation()
+        deliver("motionConfig", payload)
+    }
     func deliver(_ method: String, _ object: [String: Any], suffix: String = "") {
         guard pageReady, let data = try? JSONSerialization.data(withJSONObject: object), let json = String(data: data, encoding: .utf8) else { return }
         web.evaluateJavaScript("void window.petBridge?.\(method)(\(json)\(suffix))") { _, error in
             if let error { self.diagnostic("bridge-delivery-failed", ["message": error.localizedDescription]) }
         }
+    }
+    /// The durable copy of the pet's output level; the page applies it to every sound it makes.
+    func deliverAudioConfig() {
+        let stored = UserDefaults.standard.object(forKey: "petAudio.volume") as? Double
+        deliver("audioConfig", ["muted": UserDefaults.standard.bool(forKey: "petAudio.muted"),
+            "volume": stored.map { min(1, max(0, $0)) } ?? 1])
     }
     func receive(_ object: [String: Any], generation: Int) {
         guard generation == connection.generation else { return }
@@ -403,6 +424,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
             case "ready":
                 pageReady = true; applyDisplay(); startTransport()
                 deliver("hotkeyConfig", ["code": UserDefaults.standard.string(forKey: "voiceHotkeyCode") as Any? ?? NSNull()])
+                deliverAudioConfig()
+                deliverMotionConfig()
+            case "set_audio":
+                // The pet's own output level. Kept beside the other shell preferences.
+                if let muted = value["muted"] as? Bool { UserDefaults.standard.set(muted, forKey: "petAudio.muted") }
+                if let volume = value["volume"] as? Double, volume.isFinite {
+                    UserDefaults.standard.set(min(1, max(0, volume)), forKey: "petAudio.volume")
+                }
+                deliverAudioConfig()
+            case "set_motion":
+                // The durable copy of the motion knobs. Normalisation happens in the helper, so a
+                // corrupt or hand-edited value can never reach the page or the renderer.
+                if let patch = value["settings"] as? [String: Any] {
+                    MotionPreferences.save(MotionSettings.normalize(patch))
+                }
+                if let animation = value["animation"] as? String {
+                    MotionPreferences.saveAnimation(animation)
+                }
+                deliverMotionConfig()
+            case "set_chat_hud":
+                guard let visible = value["visible"] as? Bool else { return }
+                let height = value["height"] as? Double ?? speechHeight
+                let quick = value["quickHeight"] as? Double ?? quickHeight
+                guard height.isFinite, quick.isFinite else { return }
+                let bounded = min(160, max(1, height)), boundedQuick = min(112, max(40, quick))
+                if visible != speechVisible || abs(bounded-speechHeight) > 0.5 || abs(boundedQuick-quickHeight) > 0.5 {
+                    speechVisible = visible; speechHeight = bounded; quickHeight = boundedQuick; applyDisplay()
+                }
             case "set_display":
                 if let mode = value["mode"] as? String { displayPreferences.setMode(mode); applyDisplay() }
             case "set_renderer":
@@ -415,11 +464,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
                 if let phase = value["phase"] as? String { displayPreferences.resize(phase, width: value["width"] as? Double); applyDisplay() }
             case "set_collapsed":
                 if let collapsed = value["collapsed"] as? Bool, collapsed != displayCollapsed {
-                    let active = displayCollapsed ? (collapsedScreenFrame ?? panel.frame) : (modelScreenFrame ?? panel.frame)
                     displayPreferences.resize("cancel",width:nil)
                     if let open = value["open"] as? Bool { displayOpen = open }
                     displayCollapsed = collapsed
-                    applyDisplay(proposedModelTop:CGPoint(x:active.midX,y:active.maxY))
+                    applyDisplay()
                     diagnostic("pet-collapsed",["collapsed":collapsed,"width":panel.frame.width,"height":panel.frame.height])
                 }
             case "set_hotkey":
@@ -462,7 +510,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
         guard let epoch = value["generation"] as? Int, epoch == connection.generation, connection.state == "ready",
               let payload = value["message"] as? [String: Any] else { return }
         if let command = payload["command"] as? [String: Any], let type = command["type"] as? String {
-            if type == "start_voice" || type == "click_invitation" { voiceRequested = true }
+            if type == "start_voice" || type == "click_invitation" {
+                voiceRequested = true
+                let forward = { [weak self] in
+                    guard let self, self.voiceRequested, self.connection.generation == epoch else { return }
+                    if !self.connection.send(payload, generation: epoch) { self.voiceRequested = false }
+                }
+                let camera = { [weak self] in
+                    guard let self, self.voiceRequested, self.connection.generation == epoch else { return }
+                    let status = AVCaptureDevice.authorizationStatus(for: .video)
+                    if status == .notDetermined {
+                        AVCaptureDevice.requestAccess(for: .video) { granted in
+                            DispatchQueue.main.async {
+                                self.diagnostic("camera-authorization-result", ["granted": granted])
+                                forward()
+                            }
+                        }
+                    } else { forward() }
+                }
+                let status = AVCaptureDevice.authorizationStatus(for: .audio)
+                if status == .notDetermined {
+                    AVCaptureDevice.requestAccess(for: .audio) { granted in
+                        DispatchQueue.main.async {
+                            self.diagnostic("microphone-authorization-result", ["granted": granted])
+                            if granted { camera() } else { forward() }
+                        }
+                    }
+                } else if status == .authorized { camera() }
+                else { forward() }
+                return
+            }
             if ["finish_voice", "cancel", "submit_text"].contains(type) { voiceRequested = false }
         }
         if !connection.send(payload, generation: epoch) { voiceRequested = false }
@@ -471,11 +548,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKSc
         guard panel != nil, !applyingDisplay else { return }
         applyingDisplay = true; defer { applyingDisplay = false }
         let model = displayCollapsed ? (collapsedScreenFrame ?? modelScreenFrame ?? panel.frame) : (modelScreenFrame ?? panel.frame)
-        let anchor = proposedModelTop ?? CGPoint(x:model.midX,y:model.maxY)
+        let anchor: CGPoint
+        if displayCollapsed {
+            anchor = proposedModelTop ?? desiredBallTop ?? CGPoint(x:model.midX,y:model.maxY)
+            desiredBallTop = anchor
+            // Only an explicit ball drag relocates the expanded character.
+            if let proposed = proposedModelTop { desiredModelTop = proposed }
+        } else {
+            desiredBallTop = nil
+            anchor = proposedModelTop ?? desiredModelTop ?? CGPoint(x:model.midX,y:model.maxY)
+            if let proposed = proposedModelTop { desiredModelTop = proposed }
+        }
         let proposedModel = CGRect(x:anchor.x-model.width/2,y:anchor.y-model.height,width:model.width,height:model.height)
         let screen = NSScreen.screens.max { $0.visibleFrame.intersection(proposedModel).area < $1.visibleFrame.intersection(proposedModel).area }
         guard let visible = screen?.visibleFrame else { return }
-        let layout = PetDisplayLayout.fit(width:displayPreferences.width,open:displayOpen,screen:visible,anchor:anchor,collapsed:displayCollapsed)
+        let firstPlacement = modelScreenFrame == nil && !displayCollapsed && proposedModelTop == nil
+        // Default near the lower-right. This offset is approximate until the
+        // visible figure and Dock Trash can be measured in the same coordinate space.
+        let layoutAnchor = firstPlacement ? CGPoint(x:visible.maxX-52,y:visible.minY) : anchor
+        if firstPlacement { desiredModelTop = layoutAnchor }
+        let layout = PetDisplayLayout.fit(width:displayPreferences.width,open:displayOpen,screen:visible,anchor:layoutAnchor,collapsed:displayCollapsed,speechVisible:speechVisible,speechHeight:speechHeight,quickHeight:quickHeight)
+        if firstPlacement { diagnostic("initial-placement",["edge":"bottom-right","maxX":layout.frame.maxX,"minY":layout.frame.minY,"screenMaxX":visible.maxX,"screenMinY":visible.minY]) }
         if displayCollapsed { collapsedScreenFrame = layout.ballFrame }
         else { modelScreenFrame = layout.modelFrame; collapsedScreenFrame = nil }
         // The WK viewport stays the size of its screen. Only its clipped native

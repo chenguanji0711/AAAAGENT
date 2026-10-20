@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { VideoPetRenderer } from '../video-pet-renderer.mjs';
 import { replyAction, workAction, catalogEntries } from '../video-pet-state.mjs';
+import { frameBox } from '../video-pet-face-effects.mjs';
 
 test('automatic replies honor disabled and explicit neutral presets', () => {
   assert.equal(replyAction({presetId:null,emotion:'happy',gesture:'heart'}),'idle');
@@ -78,4 +79,53 @@ test('changing the action cancels an unfinished load; disposal cancels the next 
 test('missing resources report failure without reporting model readiness', async t => {
   const {renderer}=fixture(t);globalThis.fetch=async()=>{throw Error('synthetic missing resource');};
   await assert.rejects(renderer.load(),/视频桌宠素材未安装/);assert.equal(renderer.ready,false);
+});
+test('video pixels map through the object-fit box the browser actually draws', () => {
+  // The clip is 16:9 inside a 641x340 element, so contain letterboxes it horizontally.
+  const box = frameBox({ left: 100, top: 50, width: 641, height: 340 });
+  assert.equal(box.scale, 340 / 360);
+  assert.equal(box.top, 50);
+  assert.ok(Math.abs(box.left - (100 + (641 - 640 * (340 / 360)) / 2)) < 1e-9);
+  const square = frameBox({ left: 0, top: 0, width: 320, height: 360 });
+  assert.equal(square.scale, 0.5);
+  assert.equal(square.left, 0);
+  assert.equal(square.top, 90);
+});
+test('the clip the pet mutters with is driven by the live output amplitude', async t => {
+  const {renderer}=fixture(t);await renderer.load();
+  const seen=[];renderer.effects.setSpeaking=value=>seen.push(value);
+  renderer.updateView({state:'speaking',mouth:0.42},'speaking');
+  renderer.updateView({state:'speaking',mouth:0.05},'speaking');
+  renderer.updateView({state:'idle',mouth:0.05},'idle');
+  assert.deepEqual(seen,[0.42,0.05,null],'the renderer passes real amplitude, never a model guess');
+});
+test('a loud syllable speeds the shipped mouth animation and silence restores it', async t => {
+  const {renderer}=fixture(t);await renderer.load();
+  renderer.updateView({state:'speaking',mouth:0.25},'speaking');
+  const loud=renderer.video.playbackRate;
+  assert.ok(loud>1&&loud<=1.6,`a loud syllable plays the clip faster (got ${loud})`);
+  assert.ok(renderer.snapshot().mouthOpen>0,'the opening is reported for diagnostics');
+  renderer.updateView({state:'idle',mouth:0},'idle');
+  assert.equal(renderer.video.playbackRate,1,'the ambient clip returns to normal speed');
+});
+test('a finished reply is followed by one randomized enabled action, silently', async t => {
+  const {renderer}=fixture(t);await renderer.load();
+  renderer.setAutomaticPolicy({modelId:'dsh-video-pet',enabledIds:['exp-tushe','exp-zzz','exp-qianqing']});
+  const spoken=[];renderer.onAction=id=>spoken.push(id);
+  assert.deepEqual(renderer.actionPool(),['happy'],'held states such as rest and listening are never picked');
+  assert.equal(renderer.afterSpeech(),'happy');
+  assert.deepEqual(renderer.actionPool(),[],'the action that just played is excluded until another one runs');
+  assert.deepEqual(spoken,[],'a randomized flourish does not talk over the reply that just ended');
+  assert.equal(renderer.afterSpeech(),null,'the same action is not played twice in a row');
+  await new Promise(resolve=>setImmediate(resolve));
+  renderer.request('happy');
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(spoken,['happy'],'a user-triggered action still carries its voice line');
+});
+test('an empty automatic policy falls back to the ambient state instead of guessing', async t => {
+  const {renderer}=fixture(t);await renderer.load();
+  renderer.setAutomaticPolicy({modelId:'disconnected',enabledIds:[]});
+  assert.deepEqual(renderer.actionPool(),[]);
+  assert.equal(renderer.afterSpeech(),null);
+  assert.equal(renderer.ambient,'idle');
 });

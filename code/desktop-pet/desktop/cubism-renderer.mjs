@@ -1,7 +1,10 @@
 import { InteractionMotion } from './interaction-motion.mjs';
+import { collectModelReferences } from './model-references.mjs';
 import { normalizePresentationIntent } from '../contracts/presentation.ts';
 import { ModelFeather } from './model-feather.mjs';
+import { bindOpaqueEyewear } from './opaque-eyewear.mjs';
 import presetCatalog from './assets/local-model/presets.json';
+import configuredParameters from './config/parameter-map.json';
 // Application adapter over the official SDK; SDK owns deformation, physics, blending and WebGL rendering.
 import { CubismFramework } from './vendor/cubism/Framework/src/live2dcubismframework.ts';
 import { CubismUserModel } from './vendor/cubism/Framework/src/model/cubismusermodel.ts';
@@ -16,8 +19,9 @@ const presets = new Map(presetCatalog.items.map(item => [item.id, item]));
 const automaticItems = presetCatalog.items.filter(item => item.availability === 'automatic');
 const faces = new Map(automaticItems.flatMap(item => (item.emotions ?? []).map(key => [key, item])));
 const gestures = new Map(automaticItems.flatMap(item => (item.gestures ?? []).map(key => [key, item])));
-const headParameters = ['ParamAngleX2', 'ParamAngleX3', 'ParamAngleX4'];
-const interactionParameters = [...headParameters, 'ParamBodyAngleX', 'ParamEyeBallX', 'ParamEyeBallY'];
+const parameters = { mouthOpen:'ParamMouthOpenY', body:'ParamBodyAngleX', eyeX:'ParamEyeBallX', eyeY:'ParamEyeBallY', leftEye:'ParamEyeLOpen', rightEye:'ParamEyeROpen', breath:'ParamBreath', ...configuredParameters };
+const headParameters = [parameters.headYaw, parameters.headPitch, parameters.headRoll];
+const interactionParameters = [...headParameters, parameters.body, parameters.eyeX, parameters.eyeY].filter(Boolean);
 const webglOwners = new Set();
 export class JellyfishRenderer extends CubismUserModel {
   constructor(canvas, report = () => {}, options = {}) {
@@ -42,11 +46,26 @@ export class JellyfishRenderer extends CubismUserModel {
       const img = new Image(); img.src = new URL(this.settings.getTextureFileName(i), base).href; await img.decode();
       if (Math.max(img.width, img.height) > this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE)) throw new Error('设备不支持这张模型纹理的尺寸');
       const gl = this.gl, tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex); gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 1);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); renderer.bindTexture(i, tex); this.textures.push(tex);
+      let source=img;
+      // Dense embroidery needs prefiltered minification at desktop scale. WebGL1
+      // needs power-of-two dimensions for mipmaps; retain the original source file
+      // and resample only the isolated accessory's GPU upload, never the atlas.
+      const lace=this.opaqueEyewear && i===this.opaqueEyewear.texture;
+      if(lace){
+        source=document.createElement('canvas');
+        source.width=2**Math.ceil(Math.log2(img.width));source.height=2**Math.ceil(Math.log2(img.height));
+        const context=source.getContext('2d');context.imageSmoothingEnabled=true;context.imageSmoothingQuality='high';
+        context.drawImage(img,0,0,source.width,source.height);
+      }
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+      if(lace) gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, lace?gl.LINEAR_MIPMAP_LINEAR:gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); renderer.bindTexture(i, tex); this.textures.push(tex);
     }
     this._modelMatrix.setHeight(1.9); this._modelMatrix.setPosition(0, 0);
     this.syncViewport(true);
-    this.report({ type: 'model-loaded', parameters: this._model.getParameterCount(), drawables: this._model.getDrawableCount(), expressions: this.expressions.size, textures: this.textures.length, canvas: [this._model.getCanvasWidth(), this._model.getCanvasHeight()], maxTextureSize: this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE), runtime: 'Cubism5-r.5' });
+    const attributes = this.gl.getContextAttributes();
+    const bounds = this.canvas.getBoundingClientRect();
+    this.report({ type: 'model-loaded', parameters: this._model.getParameterCount(), drawables: this._model.getDrawableCount(), expressions: this.expressions.size, textures: this.textures.length, canvas: [this._model.getCanvasWidth(), this._model.getCanvasHeight()], renderTarget: [this.canvas.width,this.canvas.height], backingScale: bounds.width>0?this.canvas.width/bounds.width:0, antialias: attributes?.antialias === true, alpha: attributes?.alpha === true, premultipliedAlpha: attributes?.premultipliedAlpha === true, maxTextureSize: this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE), runtime: 'Cubism5-r.5' });
     this.ready = true; this.last = performance.now();
   }
   // Shared by the real WebGL loader and silent tests of the actual Cubism rig.
@@ -59,8 +78,9 @@ export class JellyfishRenderer extends CubismUserModel {
       return buffers.get(path);
     };
     const settingsBuffer = await read('pet.model3.json');
-    const refs = JSON.parse(new TextDecoder().decode(settingsBuffer)).FileReferences;
-    const paths = [...new Set(['pet.model3.json', refs.Moc, refs.Physics, ...refs.Expressions.map(e => e.File), ...Object.values(refs.Motions).flat().map(m => m.File)])].sort();
+    const manifest = JSON.parse(new TextDecoder().decode(settingsBuffer));
+    const references = collectModelReferences(manifest);
+    const paths = [...new Set(['pet.model3.json', ...references.fingerprint].filter(Boolean))].sort();
     const hash = async buffer => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', buffer)), byte => byte.toString(16).padStart(2, '0')).join('');
     let binding = '';
     for (const path of paths) binding += path + '\0' + await hash(await read(path)) + '\n';
@@ -69,7 +89,9 @@ export class JellyfishRenderer extends CubismUserModel {
     this.settings = new CubismModelSettingJson(settingsBuffer, settingsBuffer.byteLength);
     this.loadModel(await read(this.settings.getModelFileName()), true);
     if (!this._model) throw new Error('Cubism 未能解析模型');
-    const physics = await read(this.settings.getPhysicsFileName()); this.loadPhysics(physics, physics.byteLength);
+    this.opaqueEyewear = bindOpaqueEyewear(this._model.getModel().drawables, manifest.DesktopPet?.opaqueEyewear, this.settings.getTextureCount());
+    if (this.settings.getPhysicsFileName()) { const physics = await read(this.settings.getPhysicsFileName()); this.loadPhysics(physics, physics.byteLength); }
+    if (this.settings.getPoseFileName()) { const pose = await read(this.settings.getPoseFileName()); this.loadPose(pose, pose.byteLength); }
     this.blink = CubismEyeBlink.create(this.settings);
     this.parameterIndices = new Map(Array.from(this._model.getModel().parameters.ids, (id, i) => [id, i]));
     const supported = new Set(automaticItems.map(item => item.expressionName));
@@ -80,18 +102,23 @@ export class JellyfishRenderer extends CubismUserModel {
       for (const parameter of JSON.parse(new TextDecoder().decode(b)).Parameters) {
         if (!this.parameterIndices.has(parameter.Id)) throw new Error('预设引用了模型不存在的参数');
         // Mouth amplitude stays on the actual playback clock, never expression easing.
-        if (parameter.Id === 'ParamMouthOpenY' || parameter.Id === 'fase80') continue;
+        if (parameter.Id === parameters.mouthOpen) continue;
         this.previewParameters.add(parameter.Id);
         if (supported.has(name)) this.expressionParameters.add(parameter.Id);
         if (appearance.has(name)) this.appearanceParameters.add(parameter.Id);
       }
     }
-    const motion = await read(this.settings.getMotionFileName('Idle', 0)); this.idle = this.loadMotion(motion, motion.byteLength, 'Idle'); this.idle.setLoop(true); this.idle.setEffectIds([], []);
-    this.motionParameters = new Set(JSON.parse(new TextDecoder().decode(motion)).Curves.filter(c => c.Target === 'Parameter').map(c => c.Id));
-    this.runtimeParameters = new Set([...this.expressionParameters, ...this.motionParameters, ...interactionParameters, 'ParamBodyAngleX', 'ParamEyeLOpen', 'ParamEyeROpen', 'ParamMouthForm2', 'ParamMouthOpenY']);
+    this.motionParameters = new Set();
+    if (this.settings.getMotionCount('Idle') > 0) {
+      const motion = await read(this.settings.getMotionFileName('Idle', 0));
+      this.idle = this.loadMotion(motion, motion.byteLength, 'Idle'); this.idle.setLoop(true); this.idle.setEffectIds([], []);
+      this.motionParameters = new Set(JSON.parse(new TextDecoder().decode(motion)).Curves.filter(c => c.Target === 'Parameter').map(c => c.Id));
+    }
+    this.runtimeParameters = new Set([...this.expressionParameters, ...this.motionParameters, ...interactionParameters, parameters.leftEye, parameters.rightEye, parameters.mouthForm, parameters.mouthOpen, parameters.breath].filter(id => id && this.parameterIndices.has(id)));
     for (const id of this.runtimeParameters) { if (!this.parameterIndices.has(id)) throw new Error('动作引用了模型不存在的参数'); this.previewParameters.add(id); this.appearanceParameters.delete(id); }
-    // Asset-author switch: hide the preview watermark; source model and textures stay intact.
-    this.set('fase80', 1); this._model.update();
+    // Keep the model's authored defaults; model-specific appearance stays in its resources.
+    this._model.update();
+    this.opaqueEyewear?.apply();
     this.defaults = Array.from(this._model.getModel().parameters.values);
   }
   set(name, value) { const m = this._model; const id = CubismFramework.getIdManager().getId(name); const i = m.getParameterIndex(id); if (i >= 0 && i < m.getParameterCount()) m.setParameterValueByIndex(i, value); }
@@ -125,8 +152,16 @@ export class JellyfishRenderer extends CubismUserModel {
     if (!this.defaults) return;
     for (const id of this.appearanceParameters) this.defaults[this.parameterIndices.get(id)] = this.get(id);
   }
-  beginAttention() {
-    if (this.ready && !this.previewMode && this.policyValid && ['proc-head', 'proc-body', 'proc-blink'].some(id => this.automaticIds.has(id))) this.interaction.start(performance.now());
+  beginAttention(region = "body") {
+    if (this.ready && !this.previewMode && this.policyValid && ['proc-head', 'proc-body', 'proc-blink'].some(id => this.automaticIds.has(id))) this.interaction.start(performance.now(), region);
+  }
+  configureMotion(settings) { this.interaction.configure(settings); }
+  setLookAt(point) { this.interaction.setLookAt(point); }
+  setAnimationState(name) {
+    if (!this.ready || this.previewMode) return false;
+    const accepted = this.interaction.request(name);
+    if (accepted) this.report({type:'animation-state', state:name});
+    return accepted;
   }
   reset({ preserveAttention = false } = {}) {
     if (!preserveAttention) this.interaction.release();
@@ -156,24 +191,31 @@ export class JellyfishRenderer extends CubismUserModel {
   blendParameters(parameters, values, delta) {
     const blend = 1 - Math.exp(-Math.max(0, delta) / .12);
     for (const id of parameters) {
-      if (id === 'ParamMouthOpenY') continue;
+      if (id === parameters.mouthOpen) continue;
       const target = this.get(id), previous = values.get(id) ?? target;
       const value = Math.abs(target - previous) < .0001 ? target : previous + (target - previous) * blend;
       values.set(id, value); this.set(id, value);
     }
   }
   updateView(view, interactionState = view.state, workFocus = false) {
-    if (!this.ready) return;
-    const now = performance.now(), delta = Math.min((now - this.last) / 1000, .1); this.last = now; this.elapsed += delta;
+    if (!this.ready || this.suspended) return;
+    const now = performance.now(), rawDelta = (now - this.last) / 1000;
+    const delta = Number.isFinite(rawDelta) ? Math.max(0, Math.min(rawDelta, .05)) : 0; this.last = now; this.elapsed += delta;
     if (!this.previewMode) this.captureAppearance();
     this._model.getModel().parameters.values.set(this.previewMode ? this.previewBaseline : this.defaults);
     const enabled = id => this.previewMode ? this.previewSelection?.id === id : this.automaticIds.has(id);
     const workActive=enabled('proc-work-focus') && (this.previewMode || workFocus && ['idle','error'].includes(view.state));
-    if (enabled('motion-idle-0')) {
+    if (this.idle && enabled('motion-idle-0')) {
       if (this._motionManager.isFinished()) this._motionManager.startMotionPriority(this.idle, false, 1);
       this._motionManager.updateMotion(this._model, delta);
+      // Only scale authored motion axes. Eyelids, expressions and real mouth timing keep ownership.
+      for (const id of [...headParameters,parameters.body,'ParamBodyAngleY','ParamBodyAngleZ']) {
+        const index=this.parameterIndices.get(id);
+        if(index!==undefined) this.set(id,this.defaults[index]+(this.get(id)-this.defaults[index])*this.interaction.settings.amount);
+      }
     } else this._motionManager.stopAllMotions();
     if (enabled('proc-blink')) this.blink.updateParameters(this._model, delta);
+    if (enabled('proc-breath')) this.set(parameters.breath, .5 + .5 * Math.sin(this.elapsed * 1.6));
     const rawExpression = workActive ? {emotion:'neutral',intensity:0,delivery:'',gesture:null} : view.invitation && view.state === 'idle' ? { emotion: 'neutral', intensity: 0, delivery: '', gesture: view.invitation.gesture } : view.expression;
     const expression = normalizePresentationIntent(rawExpression);
     const faceItem = faces.get(expression.emotion), gestureItem = gestures.get(expression.gesture);
@@ -203,22 +245,31 @@ export class JellyfishRenderer extends CubismUserModel {
     const movement = this.interaction.sample({ now, delta, elapsed: this.elapsed, state: this.previewMode ? 'idle' : interactionState,
       head: enabled('proc-head')||workActive, body: enabled('proc-body')||workActive, blink: enabled('proc-blink')||workActive, work:workActive, reducedMotion:globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches===true });
     if (enabled('proc-head') || workActive) {
-      this.set('ParamAngleX2', movement.yaw); this.set('ParamAngleX3', movement.pitch); this.set('ParamAngleX4', movement.roll);
-      this.set('ParamEyeBallX', movement.gazeX); this.set('ParamEyeBallY', movement.gazeY);
+      this.set(parameters.headYaw, movement.yaw); this.set(parameters.headPitch, movement.pitch); this.set(parameters.headRoll, movement.roll);
+      this.set(parameters.eyeX, movement.gazeX); this.set(parameters.eyeY, movement.gazeY);
     }
     if (workActive || enabled('proc-blink') && !this.previewMode) {
-      this.set('ParamEyeLOpen', Math.min(this.get('ParamEyeLOpen'), 1 - movement.blink * .95));
-      this.set('ParamEyeROpen', Math.min(this.get('ParamEyeROpen'), 1 - movement.blink * .95));
+      this.set(parameters.leftEye, Math.min(this.get(parameters.leftEye), 1 - Math.max(movement.blink * .95, movement.sleep)));
+      this.set(parameters.rightEye, Math.min(this.get(parameters.rightEye), 1 - Math.max(movement.blink * .95, movement.sleep)));
+    }
+    // Physics must see the complete body pose of this frame so hair and clothing respond.
+    if (enabled('proc-body') || workActive) {
+      this.set(parameters.body, this.get(parameters.body) + movement.body);
+      for (const [id,value] of [['ParamBodyAngleY',movement.bodyY],['ParamBodyAngleZ',movement.bodyZ]])
+        if(this.parameterIndices.has(id)) this.set(id,this.get(id)+value);
     }
     if (this._physics) this._physics.evaluate(this._model, delta);
-    // Deliberate body movement layers after this model's physics; mouth remains last.
-    if (enabled('proc-body') || workActive) this.set('ParamBodyAngleX', this.get('ParamBodyAngleX') + movement.body);
+    if (!active && !this.previewMode && enabled('proc-head')) {
+      if (this.parameterIndices.has(parameters.mouthForm)) this.set(parameters.mouthForm,this.get(parameters.mouthForm)+movement.form);
+      for (const id of ['ParamBrowLY','ParamBrowRY']) if(this.parameterIndices.has(id)) this.set(id,this.get(id)+movement.brow);
+    }
     if (this.previewMode) this.blendParameters(this.previewParameters, this.previewValues, delta);
-    // This asset's MouthForm2 is a smile shape; only MouthOpenY receives output amplitude.
-    this.set('ParamMouthForm2', face === '星星眼' ? .7 : face === '脸红' ? .25 : 0);
-    this.set('ParamMouthOpenY', active ? Math.min(1, Math.sqrt(view.mouth) * 1.9) : 0);
-    this.set('fase80', 1);
+    // Expressions may shape the mouth; only real playback drives its opening.
+    const amplitude = Number.isFinite(view.mouth) ? Math.max(0, view.mouth) : 0;
+    this.set(parameters.mouthOpen, active ? Math.min(1, Math.sqrt(amplitude) * 1.9) : 0);
+    this._pose?.updateParameters(this._model, delta);
     this._model.update();
+    this.opaqueEyewear?.apply();
     this.draw();
   }
   setFraming(mode) {
@@ -240,10 +291,12 @@ export class JellyfishRenderer extends CubismUserModel {
       this.setRenderTargetSize(width, height);
     }
     if (!this._modelMatrix) return;
-    const zoom = this.framing === 'half' ? 3.2 : 1;
+    const framing = parameters.framing?.[this.framing];
+    const zoom = framing?.zoom ?? (this.framing === 'half' ? 1.8 : 1);
     this.projection = new CubismMatrix44();
     this.projection.scale(height / width * zoom, zoom); this.projection.multiplyByMatrix(this._modelMatrix);
-    if (this.framing === 'half') this.projection.translateY(-1.35);
+    const translateY = framing?.translateY ?? (this.framing === 'half' ? -.65 : 0);
+    this.projection.translateY(translateY);
   }
   draw() {
     this.syncViewport();
@@ -256,7 +309,8 @@ export class JellyfishRenderer extends CubismUserModel {
       }
     }
   }
-  snapshot() { return { mouth: this.get('ParamMouthOpenY'), body: this.get('ParamBodyAngleX'), face: this.faceKey, gesture: this.gestureKey, breath: this.get('ParamBreath') }; }
+  setSuspended(value) { this.suspended = value === true; this.last = performance.now(); }
+  snapshot() { return { mouth: this.get(parameters.mouthOpen), body: this.get(parameters.body), face: this.faceKey, gesture: this.gestureKey, breath: this.get(parameters.breath), animation: this.interaction.animation.snapshot() }; }
   dispose() {
     if (this.disposed) return;
     this.disposed = true; this.ready = false; this.feather?.dispose();

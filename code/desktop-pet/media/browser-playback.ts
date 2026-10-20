@@ -3,10 +3,12 @@ import { abortable, checkAbort } from './scope.js';
 
 /** Output timestamps describe rendered device frames; physical audibility still requires a listening check. */
 export class BrowserPlaybackDriver implements PlaybackDriver {
+  /** `gain` reads the shared pet output level, so mute and volume also govern speech. */
+  constructor(private readonly gain: () => number = () => 1) {}
   async open(bytes: Uint8Array, audioId: string, emit: (event: PlaybackSample) => void, signal: AbortSignal): Promise<PlaybackSession> {
     checkAbort(signal);
     const context = new AudioContext();
-    let source: AudioBufferSourceNode | undefined, timer: ReturnType<typeof setInterval> | undefined;
+    let source: AudioBufferSourceNode | undefined, output: GainNode | undefined, timer: ReturnType<typeof setInterval> | undefined;
     let stopped = false, resolveDone: () => void = () => {};
     const done = new Promise<void>(resolve => { resolveDone = resolve; });
     const stop = () => {
@@ -14,6 +16,7 @@ export class BrowserPlaybackDriver implements PlaybackDriver {
       stopped = true;
       if (timer) clearInterval(timer);
       if (source) { source.onended = null; try { source.stop(); } catch {} source.disconnect(); }
+      if (output) { output.disconnect(); output = undefined; }
       if (context.state !== 'closed') void context.close().catch(() => {});
       signal.removeEventListener('abort', stop); resolveDone();
     };
@@ -28,13 +31,17 @@ export class BrowserPlaybackDriver implements PlaybackDriver {
       if (firstFrame === buffer.length) throw new Error('Speech audio contains only silence');
       await abortable(context.resume(), signal); checkAbort(signal);
       const analyser = context.createAnalyser(); analyser.fftSize = 256;
-      source = context.createBufferSource(); source.buffer = buffer; source.connect(analyser); analyser.connect(context.destination);
+      // Gain sits before the meter, so the reported amplitude is what is actually audible.
+      output = context.createGain(); output.gain.value = this.gain();
+      source = context.createBufferSource(); source.buffer = buffer; source.connect(output); output.connect(analyser); analyser.connect(context.destination);
       const startTime = context.currentTime, onset = startTime + firstFrame / buffer.sampleRate, end = startTime + buffer.duration;
       const wallOrigin = Date.now() - performance.now();
       let started = false;
       const level = new Float32Array(analyser.fftSize);
       const poll = () => {
         if (stopped || signal.aborted) return;
+        // Mute or volume changes take effect on the live playback within one frame.
+        if (output) output.gain.value = this.gain();
         const timestamp = typeof context.getOutputTimestamp === 'function' ? context.getOutputTimestamp() : undefined;
         const validOutput = timestamp && Number.isFinite(timestamp.contextTime) && Number.isFinite(timestamp.performanceTime) && timestamp.performanceTime! > 0;
         const position = validOutput ? timestamp.contextTime! : context.currentTime - (context.outputLatency || 0) - (context.baseLatency || 0);

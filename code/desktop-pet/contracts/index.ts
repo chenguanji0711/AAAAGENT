@@ -191,7 +191,7 @@ export interface PerceptionProvider { perceive(input: CapturedInput, signal: Abo
 export interface DialogueProvider {
   /** Freeze this turn's clock, visual policy and execution status before context selection. */
   prepare?(input: Omit<DialogueRequest, 'context'>): void;
-  reply(input: DialogueRequest, signal: AbortSignal): Promise<DialogueReply>;
+  reply(input: DialogueRequest, signal: AbortSignal, onText?: (text: string) => void): Promise<DialogueReply>;
 }
 export interface TtsProvider { synthesize(input: TtsRequest, signal: AbortSignal): Promise<TtsResult> }
 export interface MemoryMaintenanceProvider { propose(input: MemoryMaintenanceInput, signal: AbortSignal): Promise<readonly MemoryChange[]> }
@@ -220,6 +220,8 @@ export type DesktopEvent =
   /** Actual recognized voice text, emitted only after perception and current-scope validation. */
   | { readonly type: 'transcript'; readonly scope: TurnScope; readonly text: string }
   | { readonly type: 'presentation'; readonly presentation: PetPresentation }
+  /** Ephemeral full-text snapshot; never a saved/final assistant reply or a playback signal. */
+  | { readonly type: 'reply_progress'; readonly scope: TurnScope; readonly text: string }
   | { readonly type: 'reply'; readonly reply: DialogueReply }
   | { readonly type: 'playback'; readonly playback: PlaybackEvent }
   | { readonly type: 'invitation'; readonly invitation: ProactiveInvitation }

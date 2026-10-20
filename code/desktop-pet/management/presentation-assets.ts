@@ -12,9 +12,16 @@ export async function presentationAssetRoutes(projectRoot: string): Promise<Read
     if (video) return video.routes;
     throw error;
   }
-  const refs = JSON.parse(manifest).FileReferences;
-  const paths: string[] = ['pet.model3.json', 'presets.json', refs.Moc, refs.Physics, refs.DisplayInfo, ...refs.Textures,
-    ...refs.Expressions.map((x: { File: string }) => x.File), ...Object.values(refs.Motions as Record<string, { File: string }[]>).flat().map(x => x.File)];
+  // Every section below Physics is optional in the Cubism format. A rig that omits
+  // Expressions or Motions is legitimate, and a rig with a Pose or UserData file needs
+  // those routes served too.
+  const refs = JSON.parse(manifest)?.FileReferences ?? {};
+  const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((x): x is string => typeof x === 'string') : [];
+  const expressionFiles = Array.isArray(refs.Expressions) ? (refs.Expressions as { File: string }[]).map(x => x.File) : [];
+  const motionFiles = refs.Motions && typeof refs.Motions === 'object' ? Object.values(refs.Motions as Record<string, { File: string }[]>).flat().map(x => x.File) : [];
+  const paths: string[] = ['pet.model3.json', 'presets.json',
+    ...[refs.Moc, refs.Physics, refs.Pose, refs.DisplayInfo, refs.UserData].filter((x): x is string => typeof x === 'string'),
+    ...strings(refs.Textures), ...expressionFiles, ...motionFiles];
   const routes = new Map<string, string>();
   for (const path of new Set(paths.filter(Boolean))) {
     if (path.startsWith('/') || path.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Invalid installed model path');

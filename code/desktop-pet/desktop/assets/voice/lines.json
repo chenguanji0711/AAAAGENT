@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "voice": "longanlingxi",
+  "generatedBy": "qwen-audio-tts",
+  "license": "Provider output; see THIRD_PARTY_NOTICES.md",
+  "categories": {
+    "greeting": [
+      {
+        "file": "greeting-01.wav",
+        "text": "你回来啦"
+      },
+      {
+        "file": "greeting-02.wav",
+        "text": "早上好呀"
+      },
+      {
+        "file": "greeting-03.wav",
+        "text": "欸，被你发现啦"
+      }
+    ],
+    "pat": [
+      {
+        "file": "pat-01.wav",
+        "text": "诶嘿，好舒服"
+      },
+      {
+        "file": "pat-02.wav",
+        "text": "再摸摸嘛"
+      },
+      {
+        "file": "pat-03.wav",
+        "text": "呜，别摸了啦"
+      }
+    ],
+    "eat": [
+      {
+        "file": "eat-01.wav",
+        "text": "哇，好好吃"
+      },
+      {
+        "file": "eat-02.wav",
+        "text": "我开动啦"
+      },
+      {
+        "file": "eat-03.wav",
+        "text": "还要还要"
+      }
+    ],
+    "happy": [
+      {
+        "file": "happy-01.wav",
+        "text": "嘿嘿，好开心"
+      },
+      {
+        "file": "happy-02.wav",
+        "text": "最喜欢你了"
+      },
+      {
+        "file": "happy-03.wav",
+        "text": "今天也超棒"
+      }
+    ],
+    "sleepy": [
+      {
+        "file": "sleepy-01.wav",
+        "text": "呼，好困哦"
+      },
+      {
+        "file": "sleepy-02.wav",
+        "text": "再睡五分钟嘛"
+      },
+      {
+        "file": "sleepy-03.wav",
+        "text": "晚安啦"
+      }
+    ],
+    "tired": [
+      {
+        "file": "tired-01.wav",
+        "text": "好累哦"
+      },
+      {
+        "file": "tired-02.wav",
+        "text": "让我歇一会儿"
+      }
+    ],
+    "pouty": [
+      {
+        "file": "pouty-01.wav",
+        "text": "哼"
+      },
+      {
+        "file": "pouty-02.wav",
+        "text": "不理你了啦"
+      }
+    ],
+    "curious": [
+      {
+        "file": "curious-01.wav",
+        "text": "欸？"
+      },
+      {
+        "file": "curious-02.wav",
+        "text": "什么什么？"
+      }
+    ],
+    "surprised": [
+      {
+        "file": "surprised-01.wav",
+        "text": "哇啊！"
+      },
+      {
+        "file": "surprised-02.wav",
+        "text": "吓我一跳"
+      }
+    ]
+  }
+}

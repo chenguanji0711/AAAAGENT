@@ -4,7 +4,8 @@ import type { CapturedInput, DialogueRequest, MemoryMaintenanceInput, TurnScope,
 import { QwenPerceptionProvider } from '../../providers/qwen-perception.js';
 import { QwenDialogueProvider, QwenMemoryMaintenanceProvider } from '../../providers/qwen-dialogue.js';
 import { QwenTtsProvider, billedCharacters, splitSpeech } from '../../providers/qwen-tts.js';
-import { CallOutcome, CallAuthorizer, EndpointConfig, ProviderTransport, denyPaidCalls } from '../../providers/transport.js';
+import { CallOutcome, CallAuthorizer, EndpointConfig, ProviderHttpError, ProviderTransport, denyPaidCalls } from '../../providers/transport.js';
+import { userFacingError } from '../../core/user-facing-error.js';
 import { MemoryMediaStore } from '../../media/store.js';
 import { inspectPcmWav, pcm16Wav } from '../../media/wav.js';
 
@@ -66,6 +67,36 @@ test('provider HTTP failure settles ledger without leaking body or authorization
   const permit = permits(); const transport = new ProviderTransport(async () => new Response('test-only-key private detail', { status: 401 }));
   await assert.rejects(transport.request(config(permit.authorizer), scope, 'dialogue', {}, signal()), error => error instanceof Error && error.message === 'Provider HTTP 401');
   assert.equal(permit.outcomes[0]?.status, 'failed');
+});
+test('provider HTTP failure exposes only safe status and code to the user', async () => {
+  const permit = permits();
+  const transport = new ProviderTransport(async () => Response.json({error:{code:'AllocationQuota.FreeTierOnly',
+    message:'private spoken text and test-only-key'}}, {status:403}));
+  await assert.rejects(transport.request(config(permit.authorizer), scope, 'dialogue', {}, signal()), error => {
+    assert.ok(error instanceof ProviderHttpError);
+    assert.equal(error.providerCode,'AllocationQuota.FreeTierOnly');
+    const shown=userFacingError(error);
+    assert.match(shown,/HTTP 403/);
+    assert.match(shown,/免费额度/);
+    assert.doesNotMatch(shown,/private spoken text|test-only-key/);
+    return true;
+  });
+  assert.equal(permit.outcomes[0]?.status,'failed');
+});
+test('Arrearage tells the user to check the account instead of the model', async () => {
+  const permit = permits();
+  const transport = new ProviderTransport(async () => Response.json({code:'Arrearage',
+    message:'private spoken text and test-only-key'}, {status:400}));
+  await assert.rejects(transport.request(config(permit.authorizer), scope, 'asr', {}, signal()), error => {
+    assert.ok(error instanceof ProviderHttpError);
+    const shown=userFacingError(error);
+    assert.match(shown,/HTTP 400 · Arrearage/);
+    assert.match(shown,/账户.*欠费|欠费.*账户/);
+    assert.match(shown,/费用与成本/);
+    assert.doesNotMatch(shown,/核对模型配置|private spoken text|test-only-key/);
+    return true;
+  });
+  assert.equal(permit.outcomes[0]?.status,'failed');
 });
 test('cancelled SSE does not hang waiting for a chunk or publish a partial reply', async () => {
   const permit = permits(), controller = new AbortController(); let started!: () => void;

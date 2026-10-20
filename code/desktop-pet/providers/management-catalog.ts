@@ -7,6 +7,7 @@ import { MINIMAX_TTS_MODEL, MINIMAX_TTS_ENDPOINT } from './minimax-tts.js';
 type Selection = Omit<ProviderSelection, 'credentialRef'>;
 type Choice = NonNullable<ProviderAdapterInfo['choices']>[number];
 const chatEndpoint = 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
+const audioAsrEndpoint = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
 const ttsEndpoint = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
 const slots: readonly ProviderSlot[] = ['asr', 'dialogue', 'memory_turn', 'summary', 'perception', 'tts', 'admission'];
 const identities: Record<ProviderSlot, [string, string]> = {
@@ -25,6 +26,14 @@ function chat(adapterId: string, flash: boolean): Selection {
     inputTokenLimit: 32_768, outputTokenLimit: 32_768,
     inputMicrosPerToken: flash ? 0.15 : 0.8, outputMicrosPerToken: flash ? 1.5 : 2,
     reservationMicros: flash ? 60_000 : 100_000 };
+}
+function currentFlash(adapterId: string, newer: boolean): Selection {
+  return { adapterId, provider: 'dashscope', endpoint: chatEndpoint,
+    model: newer ? 'qwen3.8-flash' : 'qwen3.7-flash-2026-07-15',
+    // Qwen3.7's lowest Beijing price tier ends at 32K input tokens.
+    inputTokenLimit: 32_768, outputTokenLimit: 32_768,
+    inputMicrosPerToken: newer ? 0.8 : 0.2, outputMicrosPerToken: newer ? 2.7 : 0.8,
+    reservationMicros: newer ? 115_000 : 33_000 };
 }
 function omni(plus: boolean, visual = false): Selection {
   return { adapterId: visual ? identities.perception[0] : 'qwen-perception', provider: 'dashscope', endpoint: chatEndpoint,
@@ -68,7 +77,8 @@ export function managementAdapterCatalog(base: TrialConfiguration, registeredVoi
     const reviewed = deepseek ? [] : slot === 'tts'
       ? [speech('qwen3-tts-instruct-flash-2026-01-26'), speech('qwen3-tts-instruct-flash')]
       : slot === 'perception' ? [omni(false, !!base.models.asr), omni(true, !!base.models.asr)]
-      : slot === 'memory_turn' || slot === 'asr' ? [] : [chat(id, false), chat(id, true)];
+      : slot === 'asr' ? [{ ...original, model: 'qwen-audio-3.0-asr-flash', endpoint: audioAsrEndpoint }]
+      : slot === 'memory_turn' ? [] : [chat(id, false), chat(id, true)];
     for (const configuration of reviewed) {
       if (choices.some(choice => choice.configuration.model === configuration.model)) continue;
       choices.push({ label: configuration.model === 'qwen3-tts-instruct-flash'
@@ -89,6 +99,18 @@ export function managementAdapterCatalog(base: TrialConfiguration, registeredVoi
         language: slot === 'tts', temperature: slot === 'dialogue' },
       status: 'available', note: `官方资料核对：${deepseek || slot === 'memory_turn' ? '2026-09-12' : '2026-09-10'}。${specific} 适配器已接入；账户可用性、音质与真实耗时未在本包调用验证。` };
   });
+  // A DeepSeek installation still needs an explicit, reviewed Bailian dialogue choice.
+  if (base.models.dialogue.provider === 'deepseek') {
+    const choices = [currentFlash('qwen-dialogue', false), currentFlash('qwen-dialogue', true),
+      chat('qwen-dialogue', true), chat('qwen-dialogue', false)];
+    catalog.push({ id: 'qwen-dialogue', label: '对话 · 阿里云百炼', slots: ['dialogue'], provider: 'dashscope',
+      endpoints: [chatEndpoint], modelHint: choices[0]!.model,
+      models: choices.map(choice => choice.model),
+      choices: choices.map(choice => ({ label: choice.model, configuration: choice })),
+      capabilities: { instructions: false, cloning: false, voice: false, language: false, temperature: true },
+      status: 'available',
+      note: '北京地域 OpenAI 兼容 Chat Completions 接口；近期 Flash 按成本优先展示，Plus 可手动选择。账户免费额度和节省计划余额会变化，请在百炼控制台核对；模型列表和连接测试不证明当前余额。' });
+  }
   const qwenAudio: Selection = { adapterId: 'qwen-audio-tts', provider: 'dashscope',
     model: 'qwen-audio-3.0-tts-flash',
     endpoint: 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer',

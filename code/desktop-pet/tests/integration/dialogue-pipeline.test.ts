@@ -107,3 +107,19 @@ test('trusted text channel completes a real saved reply without TTS, playback or
  assert.deepEqual(f.calls,['append','context','reply','append']);assert.equal(f.events.some(e=>e.type==='playback'||e.type==='presentation'&&e.presentation.state==='speaking'),false);
  assert.equal(f.events.filter(e=>e.type==='reply').length,1);assert.deepEqual(f.released,[f.turn.input.scope]);
 });
+
+
+test('text progress is scoped, ephemeral, and rejected after cancellation', async () => {
+ const f=fixture();
+ f.ports.dialogue.reply=async(input,_signal,onText)=>{
+  onText?.('partial');
+  assert.equal(f.events.some(e=>e.type==='reply_progress'&&e.text==='partial'),true);
+  assert.equal(f.calls.filter(c=>c==='append').length,1,'partial text never saved as assistant history');
+  f.controller.begin('text','new');
+  assert.throws(()=>onText?.('late'));
+  return{scope:input.scope,text:'final',expression:{emotion:'calm',intensity:.4,delivery:'',gesture:null}};
+ };
+ assert.equal((await f.pipeline.run(f.turn.input,f.turn.signal)).status,'cancelled');
+ assert.equal(f.events.filter(e=>e.type==='reply_progress').length,1);
+ assert.equal(f.events.some(e=>e.type==='reply'),false);
+});

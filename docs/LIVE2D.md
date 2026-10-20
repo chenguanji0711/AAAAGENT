@@ -26,6 +26,40 @@
 
 请根据占位配置的结构填写自己的模型资源与预设。
 
+## 本机导入流程（用户自备模型）
+
+把有权使用的模型放进 `code/desktop-pet/desktop/assets/local-model/`，入口命名为 `pet.model3.json`，然后：
+
+```bash
+cd code/desktop-pet
+node tools/configure-model.mjs                 # 在现有目录上生成禁用目录
+node tools/configure-model.mjs --id my-rig     # 指定 modelId（默认 local-model）
+node tools/configure-model.mjs --replace       # 已有 presets.json 时先留带时间戳的备份
+```
+
+规则：
+
+- **必需**：`Moc` 与 `Textures`（没有它们模型无法渲染，工具会直接拒绝并说明原因）。
+- **可选**：`Physics`、`Pose`、`DisplayInfo`、`UserData`、`Expressions`、`Motions` 全部按缺省处理；
+  缺某一节是合法模型，不是坏模型。渲染器、管理端与导入工具共用 `desktop/model-references.mjs`
+  的同一套读取规则，`presets.json` 的字节指纹在三处必须一致，否则目录会被判为过期。
+- **不越权**：只写 `presets.json`，不下载、不复制、不修改、不去水印；不触碰 `assets/local-model/dsh-pet/` 视频素材；
+  每个引用路径都做相对路径校验并 realpath 限制在模型目录内；已存在的目录默认不覆盖。
+- **保守目录**：工具只声明 manifest 证明确实存在的东西。表情与动作一律生成为 `manual`（禁用），
+  **不会**自动占用六个语义情绪槽；`neutral` 保持无表情待机。看完实际表现后，再手动把验证过的条目
+  提升为 `automatic` 并填 `emotions`。
+
+`tools/configure-model.mjs` 的容错与拒绝行为有 `desktop/tests/model-import.test.mjs` 覆盖；真实 rig 的加载、
+口型、表情回落、挂起与指纹拒绝由 `desktop/tests/run-haru-rig.mjs` 覆盖。
+
+## 验收现状
+
+- Haru（官方示例模型，仅用于兼容测试，**不是**最终角色）：真实 rig 5/5、切换生命周期 2/2。
+- 真实透明窗口实测：`model-loaded {runtime:"Cubism5-r.5", drawables:84, parameters:42, textures:2}`、
+  `renderer-selected {rendererKind:"live2d"}`、目录指纹校验通过后 `presentation-policy {applied:true, enabledCount:11}`，
+  画面里模型以透明背景正确显示。
+- **最终皮套仍待用户提供**；在它到位之前视频角色是正式角色，Live2D 只用于验证接入能力。
+
 ## 为什么不只是换文件
 
 旧角色可能使用自定义头部参数，另一角色则使用 `ParamAngleX`、`ParamAngleY`、`ParamAngleZ`。发布包把头部与嘴形名称集中在 `desktop/config/parameter-map.json`；嘴型、表情开关和动作曲线仍需逐项核对。新模型缺少某个参数时，应调整映射与动作范围。

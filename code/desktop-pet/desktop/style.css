@@ -4,10 +4,9 @@ button,input,textarea{font:inherit}button{cursor:pointer;border:0;color:inherit;
 button:disabled{cursor:default;opacity:.48}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid #527db7;outline-offset:3px}
 [hidden]{display:none!important}
 #pet{height:376px;width:100%;position:relative;user-select:none}
-#character{position:absolute;top:0;left:50%;transform:translateX(-50%);width:360px;height:340px;cursor:grab;touch-action:none}
+#character{position:absolute;top:0;left:50%;transform:translateX(-50%);width:360px;height:340px;aspect-ratio:360/340;cursor:grab;touch-action:none}
 #character:active{cursor:grabbing}canvas{width:100%;height:100%;display:block}
 #loading{position:absolute;top:45%;width:100%;text-align:center;font-size:12px;color:#536e9c}
-#open{position:absolute;bottom:6px;left:50%;transform:translateX(-50%);border-radius:18px;background:#f4f8fff5;border:1px solid #c2d5f2;padding:6px 20px;box-shadow:0 2px 10px #7089af22;font-size:13px}
 #drawer{width:min(480px,calc(100% - 20px));height:540px;margin:0 auto;padding:18px 20px 14px;display:flex;flex-direction:column;gap:10px;overflow:hidden;background:linear-gradient(145deg,#fbfdfff9,#edf3fdf8);border:1px solid #c3d3e9;border-radius:24px;box-shadow:0 5px 16px #29476a1a;position:relative}
 #drawer header{display:flex;align-items:center;gap:10px;flex:0 0 auto;min-height:30px}
 .panel-title{display:flex;align-items:center;gap:8px;flex:1;min-width:0;white-space:nowrap;font-size:14px;letter-spacing:.06em}
@@ -45,6 +44,13 @@ footer{display:flex;flex:0 0 auto;flex-wrap:wrap;gap:7px;align-items:center}
 #hotkey-settings{display:flex;flex:0 0 auto;flex-wrap:wrap;align-items:center;gap:5px;font-size:11px;color:#8192aa;padding-top:8px;border-top:1px solid #dce5f1}
 #hotkey-settings button{border-radius:7px;padding:4px 6px;background:#e4ecf7;white-space:nowrap;font-size:11px}
 #hotkey-settings .input-tip{font-size:10px;margin-left:auto;color:#98a7bb;white-space:nowrap}
+#open{position:absolute;bottom:6px;left:50%;transform:translateX(-50%);border-radius:18px;background:#f4f8fff5;border:1px solid #c2d5f2;padding:6px 20px;box-shadow:0 2px 10px #7089af22;font-size:13px;opacity:0}
+#open:focus-visible{opacity:1}
+#audio-settings{display:flex;flex:0 0 auto;flex-wrap:wrap;align-items:center;gap:7px;font-size:11px;color:#8192aa}
+#audio-toggle{width:28px;height:24px;padding:0;border-radius:7px;background:#e4ecf7;font-size:13px;line-height:1}
+#audio-toggle[aria-pressed="true"]{background:#f6e5eb;color:#8b506d}
+#audio-volume{width:74px;height:16px;accent-color:#7196c7}
+#audio-note{color:#98a7bb;white-space:nowrap}
 #reconnect{align-self:flex-start;flex:0 0 auto;font-size:12px;background:#dae7fd;border-radius:9px;padding:5px 10px}
 #invitation{position:absolute;right:18px;top:40px;max-width:185px;padding:12px;border:1px solid #bfd1ef;background:#f3f7fff5;box-shadow:0 4px 12px #728ba933;border-radius:15px;font-size:12px;text-align:left;line-height:1.6}
 #model-resize{position:absolute;right:10px;bottom:36px;width:28px;height:28px;padding:0;cursor:nwse-resize;touch-action:none;user-select:none;border-radius:8px}
@@ -188,6 +194,12 @@ body[data-pet-collapsed="true"] #pet,body[data-pet-collapsed="true"] #drawer{vis
 .video-pet-root{position:absolute;inset:0;overflow:hidden;pointer-events:none}
 .video-pet-root .dsh-pet-video{position:absolute;width:178%;height:100%;left:-39%;top:0;object-fit:contain;pointer-events:none}
 .video-pet-root[data-framing="half"] .dsh-pet-video{width:267%;height:150%;left:-83.5%;top:0}
+/* The clips carry an opaque black backdrop. The matte canvas shares the video's
+   exact box, so it inherits the same contain geometry, and the video element
+   stays in the layout as the invisible decoding source. */
+.video-pet-root .dsh-pet-video-matte{position:absolute;width:178%;height:100%;left:-39%;top:0;object-fit:contain;pointer-events:none}
+.video-pet-root[data-framing="half"] .dsh-pet-video-matte{width:267%;height:150%;left:-83.5%;top:0}
+.video-pet-root.is-matted .dsh-pet-video{opacity:0}
 #video-pet-effect,#video-pet-shadow,#video-pet-caption{position:fixed;pointer-events:none;z-index:6}
 #video-pet-effect{display:flex;align-items:center;justify-content:center;font-size:40px;color:#8170b4;text-shadow:0 0 4px white}
 #video-pet-effect img{width:100%;height:100%;object-fit:contain;border-radius:12px}
@@ -198,3 +210,47 @@ body[data-pet-collapsed="true"] #video-pet-effect,body[data-pet-collapsed="true"
 #model-settings select{min-width:0;max-width:122px;border:1px solid #cbd7e7;border-radius:7px;padding:4px;background:#fff;color:#526684;font:inherit}
 #video-controls{display:flex;min-width:0;align-items:center;gap:4px}
 #model-settings button{padding:4px;border-radius:7px;background:#e5edf8;white-space:nowrap}
+
+/* Motion settings: same compact controls as the rest of the panel, plus a frame-time readout
+   that only ever shows measured samples. */
+#motion-settings { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 12px; }
+#motion-settings label { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+#motion-settings input[type="range"] { width: 96px; }
+#motion-settings select { max-width: 128px; }
+#motion-stats { font-variant-numeric: tabular-nums; opacity: 0.75; white-space: nowrap; }
+
+/* The model keeps the shipped 360:340 proportion when it is resized, and the page mirrors the host's
+   model height so a larger model is drawn rather than letterboxed. */
+#motion-fit-drawer{padding:3px 8px;border:1px solid #b9cce3;border-radius:10px;background:#f4f8ff;color:#49648a;font-size:12px;cursor:pointer}
+#motion-fit-drawer:hover{background:#e8f1ff}
+
+/* ── 快捷消息输入框：贴在桌宠正下方，跟随窗口移动（#pet 是桌宠容器） ── */
+#quick-chat{position:absolute;left:50%;transform:translateX(-50%);bottom:0;display:flex;align-items:flex-end;gap:6px;
+  width:min(340px,calc(100% - 16px));padding:5px 6px 5px 10px;box-sizing:border-box;
+  background:#f8fbfff2;border:1px solid #c3d3e9;border-radius:14px;box-shadow:0 3px 12px #29476a1f;
+  backdrop-filter:blur(6px);z-index:6}
+#quick-chat textarea{flex:1 1 auto;min-height:22px;max-height:96px;resize:none;overflow:auto;
+  border:0;background:transparent;color:#2f4a68;font:12px/1.45 -apple-system,"PingFang SC",sans-serif;padding:3px 0;outline:none}
+#quick-chat textarea::placeholder{color:#8fa6c0}
+#quick-send{flex:0 0 auto;width:26px;height:26px;display:grid;place-items:center;border:0;border-radius:13px;
+  background:#5b8fd6;color:#fff;font-size:14px;line-height:1;cursor:pointer}
+#quick-send:disabled{opacity:.45;cursor:default}
+#quick-chat[data-busy="true"]{opacity:.72}
+
+/* AppKit reserves a neighbouring rectangle in the native clip. Page coordinates
+   are acknowledged by the host, including when the speech bar switches sides. */
+#speech-bubble{position:absolute;right:8px;top:42px;width:min(260px,calc(100% - 16px));
+  max-height:min(160px,calc(100% - 108px));display:flex;flex-direction:column;overflow:hidden;
+  padding:7px 10px 10px;box-sizing:border-box;background:#fffffff5;border:1px solid #c3d3e9;
+  border-radius:14px 14px 4px 14px;box-shadow:0 4px 14px #29476a24;color:#2f4a68;
+  font:12px/1.55 -apple-system,"PingFang SC",sans-serif;z-index:7;pointer-events:auto;user-select:text}
+#speech-bubble header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex:none;color:#7185a0;font-size:11px}
+#speech-hide,#quick-hide{flex:none;width:28px;height:28px;display:grid;place-items:center;
+  border-radius:8px;color:#617d9c;font-size:20px;line-height:1;cursor:pointer}
+#speech-hide:hover,#quick-hide:hover{background:#dfe8f5}
+#speech-text{min-height:19px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}
+#hud-restore{position:absolute;top:38px;right:8px;display:flex;gap:5px;z-index:8}
+#hud-restore button{font-size:11px;padding:5px 8px;border:1px solid #c3d3e9;border-radius:10px;background:#fffffff5;color:#49648a}
+
+/* Main chat opens by clicking the character; no extra opener button is shown. */
+#open{display:none}

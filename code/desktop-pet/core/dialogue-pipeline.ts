@@ -127,7 +127,10 @@ export class DialoguePipeline {
       // Ambiguous requests get the resolver's question without another model turning it into an acknowledgement.
       const reply = memoryOutcome?.status === 'needs_clarification'
         ? { scope, text: memoryOutcome.clarification?.trim() ?? '', expression: { emotion: 'neutral', intensity: 0, delivery: '自然、温和地询问', gesture: null } }
-        : await this.ports.dialogue.reply({scope, text, context, ...(memoryOutcome ? { memoryOutcome } : {}), ...(memoryPending ? {memoryPending} : {})}, signal);
+        : await this.ports.dialogue.reply({scope, text, context, ...(memoryOutcome ? { memoryOutcome } : {}), ...(memoryPending ? {memoryPending} : {})}, signal, text => {
+          this.current(scope, signal); validateContext();
+          this.emit({type: 'reply_progress', scope, text});
+        });
       if (!reply.text) throw new Error('需要澄清的记忆请求缺少问题。');
       this.current(scope, signal); this.belongs(scope, reply);
       validateContext();

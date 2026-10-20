@@ -47,6 +47,26 @@ test('excludes foreign/deleted/invalidated rows and refuses assistant provenance
   assert.deepEqual(result.rows.map(row => row.recordId), ['original-turn:user']);
   assert.equal(readCompanionChatHistory(file, 'other' as CharacterId).status, 'unavailable');
 }));
+test('restores a real reply with multiple context sources by its own turn user', () => fixture((file, db) => {
+  add(db, 'prior:user', 'user', '此前的问题。', 1);
+  add(db, 'prior:assistant', 'assistant', '此前的回答。', 2, '[{"id":"prior:user","version":1}]');
+  add(db, 'original-turn:user', 'user', text, 3);
+  add(db, 'original-turn:assistant', 'assistant', '本轮真实回复。', 4,
+    '[{"id":"prior:user","version":1},{"id":"prior:assistant","version":1},{"id":"original-turn:user","version":1}]');
+  db.prepare('INSERT INTO memory_turn_outcomes VALUES(?,?,?,?)').run('companion', 'original-turn:user', JSON.stringify(scope), hash(text));
+  const history = readCompanionChatHistory(file, 'companion');
+  assert.equal(history.status, 'ready');
+  assert.equal(history.rows.at(-1)?.text, '本轮真实回复。');
+  assert.deepEqual(history.rows.at(-1)?.sourceScope, scope);
+}));
+test('multiple context sources cannot substitute another turn or an obsolete current user', () => fixture((file, db) => {
+  pair(db); add(db, 'other:user', 'user', '其他轮的问题。', 3);
+  for (const sources of ['[{"id":"other:user","version":1},{"id":"original-turn:user","version":2}]',
+    '[{"id":"other:user","version":1},{"id":"unknown:user","version":1}]']) {
+    db.prepare('UPDATE memory_records SET sources_json=? WHERE id=?').run(sources, 'original-turn:assistant');
+    assert.equal(readCompanionChatHistory(file, 'companion').rows.some(row => row.role === 'assistant'), false);
+  }
+}));
 test('keeps unknown or edited historical scope null instead of assigning the new backend session', () => fixture((file, db) => {
   pair(db); db.prepare('UPDATE memory_records SET text=? WHERE message_role=?').run('修改后的原文', 'user');
   assert.deepEqual(readCompanionChatHistory(file, 'companion').rows.map(r => r.sourceScope), [null, null]);

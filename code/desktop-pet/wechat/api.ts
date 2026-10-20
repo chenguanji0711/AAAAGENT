@@ -59,13 +59,19 @@ export class WeChatApi {
     if(!context)throw new WeChatApiError('rejected');
     return this.request<{ret?:number;message_id?:string}>(auth.baseUrl,'/ilink/bot/sendmessage',signal,{msg:{from_user_id:'',to_user_id:auth.userId,client_id:clientId,message_type:2,message_state:2,context_token:context,item_list:[{type:1,text_item:{text}}]},base_info:this.baseInfo()},auth.token);
   }
-  uploadAudioUrl(auth:WeChatCredentials, input:{filekey:string;rawsize:number;rawfilemd5:string;filesize:number;aeskey:string},signal:AbortSignal) {
-    return this.request<{upload_param?:string;upload_full_url?:string}>(auth.baseUrl,'/ilink/bot/getuploadurl',signal,{...input,media_type:3,to_user_id:auth.userId,no_need_thumb:true,base_info:this.baseInfo()},auth.token);
+  /** Media type 3 registers a file; 4 registers a native voice clip. */
+  uploadAudioUrl(auth:WeChatCredentials, input:{filekey:string;rawsize:number;rawfilemd5:string;filesize:number;aeskey:string}, signal:AbortSignal, mediaType=3) {
+    return this.request<{upload_param?:string;upload_full_url?:string}>(auth.baseUrl,'/ilink/bot/getuploadurl',signal,{...input,media_type:mediaType,to_user_id:auth.userId,no_need_thumb:true,base_info:this.baseInfo()},auth.token);
   }
   /** Explicit FILE attachment candidate; this method never claims native voice delivery. */
   sendAudioFile(auth:WeChatCredentials,context:string,input:{downloadParam:string;aesHex:string;size:number},clientId:string,signal:AbortSignal){
     if(!context)throw new WeChatApiError('rejected');
     return this.request<{ret?:number;message_id?:string}>(auth.baseUrl,'/ilink/bot/sendmessage',signal,{msg:{from_user_id:'',to_user_id:auth.userId,client_id:clientId,message_type:2,message_state:2,context_token:context,item_list:[{type:4,file_item:{file_name:'语音回复.wav',len:String(input.size),media:{encrypt_query_param:input.downloadParam,aes_key:Buffer.from(input.aesHex).toString('base64'),encrypt_type:1}}}]},base_info:this.baseInfo()},auth.token);
+  }
+  /** Native VOICE bubble: SILK payload, item type 3. Upstream reports it can answer success without a bubble. */
+  sendVoiceMessage(auth:WeChatCredentials,context:string,input:{downloadParam:string;aesHex:string;playtime:number},clientId:string,signal:AbortSignal){
+    if(!context)throw new WeChatApiError('rejected');
+    return this.request<{ret?:number;message_id?:string}>(auth.baseUrl,'/ilink/bot/sendmessage',signal,{msg:{from_user_id:'',to_user_id:auth.userId,client_id:clientId,message_type:2,message_state:2,context_token:context,item_list:[{type:3,voice_item:{media:{encrypt_query_param:input.downloadParam,aes_key:Buffer.from(input.aesHex).toString('base64'),encrypt_type:1},encode_type:6,sample_rate:24000,bits_per_sample:16,playtime:input.playtime}}]},base_info:this.baseInfo()},auth.token);
   }
   private baseInfo() { return {channel_version:'2.4.9-beta.0',bot_agent:'DesktopPet/0.1'}; }
 }

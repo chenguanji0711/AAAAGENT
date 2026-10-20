@@ -77,6 +77,42 @@ test('catalog is detached from the baseline and fresh between calls, including n
   assert.doesNotMatch(JSON.stringify(managementAdapterCatalog(base)), /mutated/);
 });
 
+test('DeepSeek dialogue can be switched to reviewed Bailian chat models without a model call', () => {
+  const original = fixture();
+  const base = { ...original, models: { ...original.models, dialogue: { ...original.models.dialogue, provider: 'deepseek' as const, model: 'deepseek-flash',
+    endpoint: 'https://api.deepseek.com/chat/completions', inputMicrosPerToken: 2,
+    outputMicrosPerToken: 8, reservationMicros: 3545728 } } };
+  const qwen = managementAdapterCatalog(base).find(adapter => adapter.id === 'qwen-dialogue');
+  assert.ok(qwen);
+  assert.deepEqual(qwen.models, ['qwen3.7-flash-2026-07-15', 'qwen3.8-flash',
+    'qwen-flash-2025-07-28', 'qwen-plus-2025-12-01']);
+  assert.deepEqual(qwen.choices?.slice(0, 2).map(choice => [choice.configuration.inputMicrosPerToken,
+    choice.configuration.outputMicrosPerToken]), [[0.2, 0.8], [0.8, 2.7]]);
+  assert.equal(qwen.choices?.every(choice => choice.configuration.endpoint ===
+    'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions'), true);
+  assert.doesNotMatch(JSON.stringify(qwen), /credentialFile|nonexistent-catalog-test-key/);
+  const settings = defaultManagedSettings(base);
+  settings.providers.dialogue = { ...qwen.choices![0]!.configuration,
+    credentialRef: settings.providers.perception.credentialRef };
+  const saved = validateManagedSettings(settings, base);
+  assert.equal(effectiveTrialConfiguration(base, saved).models.dialogue.model, 'qwen3.7-flash-2026-07-15');
+});
+test('QwenAudio ASR choice is registered with native endpoint and duration pricing', () => {
+  const original = fixture();
+  const baseline = original.models.tts!;
+  const base = { ...original, models: { ...original.models, asr: { ...baseline, model: 'qwen3-asr-flash-2026-02-10',
+    endpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
+    audioMicrosPerSecond: 220, inputMicrosPerToken: 0, outputMicrosPerToken: 0 } } };
+  const asr = managementAdapterCatalog(base).find(adapter => adapter.id === 'qwen-asr');
+  const choice = asr?.choices?.find(choice => choice.configuration.model === 'qwen-audio-3.0-asr-flash');
+  assert.ok(choice);
+  assert.equal(choice.configuration.endpoint, 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation');
+  assert.equal(choice.configuration.audioMicrosPerSecond, 220);
+  assert.equal(validateTrialConfiguration({ ...base, models: { ...base.models, asr: trialModel(choice.configuration) } }).models.asr?.model, 'qwen-audio-3.0-asr-flash');
+  assert.equal(estimateTrialMicros(trialModel(choice.configuration), 'asr',
+    { status: 'success', usage: { duration: 1.2 }, requestId: null }), 440);
+});
+
 test('six existing adapter choices pass trial bounds and keep model/price/reservation as one configuration', () => {
   const base = fixture();
   for (const adapter of managementAdapterCatalog(base).filter(adapter => !['qwen-audio-tts', 'minimax-tts'].includes(adapter.id))) {

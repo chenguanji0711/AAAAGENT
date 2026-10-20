@@ -1,3 +1,4 @@
+import { loadRendererReplacement } from './renderer-switch.mjs';
 import {WakeController} from './wake-controller.mjs';
 import { COMPANION_LABEL, isProductCharacter } from '../contracts/character.ts';
 import { CaptureFeedback } from './capture-feedback.mjs';
@@ -6,11 +7,15 @@ import { WorkCard } from './work-card.mjs';
 import { DesktopWorkbenchCard } from './workbench-card.mjs';
 import { installDisplayControls } from './display-controls.mjs';
 import { installPetWindowControls } from './pet-window-controls.mjs';
+import { FrameScheduler } from './frame-scheduler.mjs';
+import { normalizeMotionSettings, DEFAULT_MOTION_SETTINGS } from './animation-state.mjs';
 import { toDeviceFailure, deviceFailureMessage } from '../media/capture-errors.ts';
 import { PressToTalk, validVoiceKey } from './press-to-talk.ts';
 import { DesktopChatLog } from './chat-log.ts';
 import { DesktopViewState, DesktopConnectionState, scopeEquals } from './view-state.ts';
 import { VideoPetRenderer } from './video-pet-renderer.mjs';
+import { createAudioOutput } from './audio-output.mjs';
+import { createVoiceLines } from './voice-lines.mjs';
 import { BrowserPlaybackDriver } from '../media/browser-playback.ts';
 import { DesktopPlaybackController } from './playback-controller.ts';
 import { BrowserCaptureDriver } from '../media/browser-capture.ts';
@@ -19,6 +24,20 @@ const $ = id => document.getElementById(id);
 const hosted = !!window.webkit?.messageHandlers?.shell;
 const native = (name, value) => window.webkit?.messageHandlers?.[name]?.postMessage(value);
 const report = value => native('diagnostic', value);
+function readStoredAudio() { try { return JSON.parse(localStorage.getItem('petAudio') ?? 'null') ?? undefined; } catch { return undefined; } }
+function writeStoredAudio(value) { try { localStorage.setItem('petAudio', JSON.stringify(value)); } catch {} }
+
+// Motion knobs shared with the native host, which normalises and persists them (see
+// native/motion-preferences.swift). The page mirrors what it is told; only a browser preview has
+// no host to ask and falls back to localStorage.
+let motionConfig = { ...DEFAULT_MOTION_SETTINGS };
+let selectedAnimation = 'Idle';
+function readStoredMotion() { try { return JSON.parse(localStorage.getItem('petMotion') ?? 'null') ?? undefined; } catch { return undefined; } }
+function writeStoredMotion(value) { try { localStorage.setItem('petMotion', JSON.stringify(value)); } catch {} }
+// One output level for the dynamic reply and the pre-recorded action lines alike.
+// The native host owns the durable copy; a browser preview falls back to localStorage.
+const audio = createAudioOutput({ initial: readStoredAudio(), persist: value => { writeStoredAudio(value); native('shell', { type: 'set_audio', muted: value.muted, volume: value.volume }); } });
+const voiceLines = createVoiceLines({ base: new URL('assets/voice/', location.href), gain: () => audio.gain, busy: () => playback.busy });
 const connection = new DesktopConnectionState();
 const send = (value, generation = connection.generation) => {
   if (connection.current(generation) && connection.connected) native('desktop', { generation, message: value });
@@ -61,7 +80,7 @@ function applyPresentationPolicy(){
   const applied=renderer.setAutomaticPolicy(policy);
   if(presentationPolicy)report({type:'presentation-policy',modelId:policy.modelId,revision:policy.revision,enabledCount:policy.enabledIds.length,applied:applied===true});
 }
-let renderer, capturing, captureAllowed = false, voicePhase = 'idle';
+let renderer, capturing, captureAllowed = false, voicePhase = 'idle', greeted = false;
 let rendererKind = 'video', rendererBooted = false, rendererSwitch = Promise.resolve();
 let initialDisplayResolve;
 const initialDisplay = hosted ? new Promise(resolve => { initialDisplayResolve=resolve; }) : Promise.resolve();
@@ -71,24 +90,47 @@ function selectRenderer(kind) {
   rendererSwitch = rendererSwitch.then(async () => {
     if (renderer?.kind === rendererKind && renderer.ready) return;
     const selected = rendererKind;
-    renderer?.dispose(); renderer = undefined; $('model').hidden = false; $('loading').hidden = false;
-    $('loading').textContent = 'AAAAGENT正在过来…';
-    $('video-controls').hidden = selected !== 'video';
+    const previous = renderer;
+    const oldCanvas = $('model');
+    const canvas = oldCanvas.cloneNode(false);
+    canvas.id = 'model-pending'; canvas.hidden = false;
+    canvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;visibility:hidden';
+    oldCanvas.before(canvas);
+    let next;
+    $('loading').hidden = false; $('loading').textContent = '正在切换角色…';
     try {
-      if (selected === 'video') renderer = new VideoPetRenderer($('model'), report);
+      if (selected === 'video') next = new VideoPetRenderer(canvas, report);
       else {
         await loadCubismCore();
         const { JellyfishRenderer } = await import('./cubism-renderer.mjs');
-        renderer = new JellyfishRenderer($('model'), report, {assetBase:'assets/local-model/'});
+        next = new JellyfishRenderer(canvas, report, {assetBase:'assets/local-model/'});
       }
-      renderer.kind = selected; await renderer.load(); applyPresentationPolicy(); renderer.setFraming(display.mode);
-      renderer.setSuspended?.(petWindow.collapsed || document.hidden); $('loading').hidden = true;
+      next.kind = selected;
+      if (next.root) next.root.style.visibility = 'hidden';
+      next.setFraming(display.mode);
+      next.setSuspended?.(petWindow.collapsed || document.hidden);
+      renderer = await loadRendererReplacement(previous, next);
+      // A replacement instance starts on its own defaults, so the knobs and the current action are
+      // pushed to it here too; this is not only a first-launch concern.
+      applyMotionConfig({ requestCurrentAnimation: true });
+      oldCanvas.remove(); canvas.id = 'model'; canvas.style.cssText = '';
+      if (renderer.root) renderer.root.style.visibility = '';
+      applyPresentationPolicy(); renderer.setFraming(display.mode);
+      renderer.onAction = id => { speakLine(id); };
+      $('loading').hidden = true; $('video-controls').hidden = selected !== 'video';
+      if (!greeted) { greeted = true; setTimeout(() => { speakLine('session-start'); }, 1200); }
       if (selected === 'video') {
         $('video-action').replaceChildren(...[...renderer.entries.values()].map(action => { const option = document.createElement('option'); option.value = action.id; option.textContent = action.label; return option; }));
       }
+      report({type:'renderer-selected',rendererKind:selected});
     } catch (error) {
-      renderer?.dispose(); renderer = undefined; $('loading').textContent = error.code === 'LIVE2D_RESOURCES_MISSING' ? error.message : '角色加载失败，请在面板中切换角色';
-      view.error = error.message; report({type:'model-error'}); panel(true); renderUI();
+      next?.dispose(); canvas.remove(); renderer = previous;
+      if (previous?.ready) {
+        rendererKind = previous.kind; $('model-kind').value = rendererKind;
+        $('loading').hidden = true; $('video-controls').hidden = rendererKind !== 'video';
+        native('shell', {type:'set_renderer',rendererKind});
+      } else $('loading').textContent = error.code === 'LIVE2D_RESOURCES_MISSING' ? error.message : '角色加载失败，请在面板中切换角色';
+      view.error = error.message; report({type:'model-error',rendererKind:selected}); panel(true); renderUI();
     }
   });
   return rendererSwitch;
@@ -132,7 +174,85 @@ $('management').onclick = () => {
   $('management-notice').hidden = true;
   native('shell', { type:'open_management' });
 };
+// The display controls only assign a WIDTH to the character, while the CSS keeps a fixed height, so
+// dragging the resize handle wider used to letterbox the model instead of enlarging it. The page
+// therefore applies the matching height itself and offers a one-click "as tall as the dialog".
+let latestLayout = null;
+function applyLayoutGeometry(value) {
+  if (!value) return;
+  const modelWidth = Number(value.modelWidth), modelHeight = Number(value.modelHeight);
+  if (!Number.isFinite(modelWidth) || !Number.isFinite(modelHeight) || modelWidth <= 0) return;
+  const character = document.getElementById('character');
+  const pet = document.getElementById('pet');
+  if (character) character.style.height = `${modelHeight}px`;
+  // Mirror the native model/composer reservation without resizing the WebGL canvas.
+  if (pet) pet.style.height = `${Number.isFinite(value.petHeight) ? value.petHeight : modelHeight + 36}px`;
+  positionSpeechBubble();
+  // The quick composer geometry comes from the native layout (own width, clamped to the screen and
+  // inside the native clip). Place it with those numbers instead of centring it in the pet, which
+  // used to overflow the clip whenever the model was narrower than the composer.
+  const quickBox = $('quick-chat');
+  if (quickBox && ['quickLeft', 'quickTop', 'quickWidth'].every(k => Number.isFinite(value[k]))
+      && Number.isFinite(value.petLeft) && Number.isFinite(value.petTop)) {
+    Object.assign(quickBox.style, {
+      left: `${value.quickLeft - value.petLeft}px`,
+      top: `${value.quickTop - value.petTop}px`,
+      width: `${value.quickWidth}px`,
+      bottom: 'auto',
+      transform: 'none',
+    });
+  }
+  // Model canvas may overhang the edge, but every control must stay inside the native clip.
+  requestAnimationFrame(clampHudsToScreen);
+}
+const HUD_SELECTORS = ['quick-chat', 'speech-show', 'quick-show', 'pet-collapse', 'model-resize', 'work-badge', 'open', 'invitation'];
+function clampHudsToScreen() {
+  const vw = window.innerWidth || document.documentElement.clientWidth || 0;
+  if (!vw) return;
+  const clip = latestLayout && ['clipLeft', 'clipTop', 'clipWidth', 'clipHeight'].every(k => Number.isFinite(latestLayout[k]))
+    ? {left:latestLayout.clipLeft,top:latestLayout.clipTop,right:latestLayout.clipLeft+latestLayout.clipWidth,bottom:latestLayout.clipTop+latestLayout.clipHeight}
+    : {left:0,top:0,right:vw,bottom:innerHeight};
+  for (const id of HUD_SELECTORS) {
+    const el = $(id);
+    if (!el || el.hidden) continue;
+    // Individual translate composes with the authored transform (including centring).
+    // Clearing only this correction makes repeated acknowledgements idempotent.
+    el.style.translate = 'none';
+    const r = el.getBoundingClientRect(); if (!r.width || !r.height) continue;
+    const insetX=Math.min(6,Math.max(0,(clip.right-clip.left-r.width)/2));
+    const insetY=Math.min(6,Math.max(0,(clip.bottom-clip.top-r.height)/2));
+    const left=Math.max(0,clip.left)+insetX,right=Math.min(vw,clip.right)-insetX;
+    const top=Math.max(0,clip.top)+insetY,bottom=Math.min(innerHeight,clip.bottom)-insetY;
+    const dx=Math.min(Math.max(0,left-r.left),right-r.right);
+    const dy=Math.min(Math.max(0,top-r.top),bottom-r.bottom);
+    el.style.translate = `${dx}px ${dy}px`;
+  }
+}
+window.addEventListener('resize', () => requestAnimationFrame(clampHudsToScreen));
 const display = installDisplayControls({ get: $, shell: value => native('shell', value), setFraming: mode => renderer?.setFraming(mode) });
+const receiveDisplay = display.receive;
+display.receive = value => { receiveDisplay(value); latestLayout = value; applyLayoutGeometry(value); };
+/**
+ * The model width whose drawn height equals the dialog height, derived from the host's own numbers
+ * rather than a hard-coded size: the same aspect the host uses to lay the model out. The host's own
+ * 220..720 clamp is applied too, so a request outside it is clamped exactly like a drag would be.
+ */
+function drawerMatchedWidth(layout) {
+  if (!layout) return null;
+  const modelWidth = Number(layout.modelWidth), modelHeight = Number(layout.modelHeight), drawerHeight = Number(layout.drawerHeight);
+  if (!Number.isFinite(modelWidth) || !Number.isFinite(modelHeight) || !Number.isFinite(drawerHeight)) return null;
+  if (modelWidth <= 0 || modelHeight <= 0 || drawerHeight <= 0) return null;
+  return Math.min(720, Math.max(220, drawerHeight / (modelHeight / modelWidth)));
+}
+/** Resizes the model so its height equals the dialog's height, using the host's own aspect. */
+function fitModelToDrawer() {
+  const width = drawerMatchedWidth(latestLayout);
+  if (width === null) return;
+  // The host persists this as petDisplay.width; begin/commit mirrors its own drag protocol.
+  native('shell', { type: 'resize_model', phase: 'begin' });
+  native('shell', { type: 'resize_model', phase: 'commit', width });
+  report({ type: 'model-fitted-to-drawer', width: Math.round(width), drawerHeight });
+}
 const hold = new PressToTalk({
   start() {
     // A fresh physical hold supersedes pending generation, output or capture cleanup.
@@ -147,7 +267,16 @@ const hold = new PressToTalk({
 });
 const petWindow = installPetWindowControls({ get: $, shell: value => native('shell', value),
   panelOpen: () => panelOpen,
-  onPetClick: () => { renderer?.pat?.(); if (!workbench.isOpen) panel(!panelOpen); },
+  // Clicking the character pats it and opens the conversation. It never closes an
+  // already open conversation, so petting the character while chatting cannot dismiss it.
+  onPetClick: event => {
+    const region = regionForClick(event);
+    if (renderer?.pat) renderer.pat();
+    else rendererCapability('beginAttention', region);
+    if (!workbench.isOpen && !panelOpen) panel(true);
+  },
+  // The window controls own the press; the page only mirrors it into a pose.
+  onDragChange: applyDragState,
   onCollapse() {
     const focused = document.activeElement;
     const saved = { panel: panelOpen, workbench: workbench.isOpen, records: records.isOpen,
@@ -196,6 +325,27 @@ $('hotkey-bind').onkeydown = event => {
 };
 $('hotkey-clear').onclick = () => { bindingKey = false; hotkeyConfig(null); $('hotkey-bind').textContent = '设置按键'; native('shell', { type: 'set_hotkey', code: null }); };
 
+/** Plays one cached action line and records only that it happened (never the audio or text). */
+function speakLine(actionId) {
+  void voiceLines.action(actionId).then(played => {
+    if (played) report({ type: 'voice-line', action: actionId, category: voiceLines.stats.lastCategory, file: voiceLines.stats.lastFile });
+  }).catch(() => {});
+}
+
+// The volume control governs the dynamic reply and the action lines together.
+function renderAudio(state = audio.state) {
+  const silent = state.muted || state.volume === 0;
+  const toggle = $('audio-toggle');
+  toggle.textContent = silent ? '🔇' : '🔊';
+  toggle.setAttribute('aria-pressed', String(state.muted));
+  toggle.title = toggle.ariaLabel = state.muted ? '取消静音' : '静音';
+  $('audio-volume').value = String(Math.round(state.volume * 100));
+  $('audio-volume').title = `音量 ${Math.round(state.volume * 100)}%`;
+}
+$('audio-toggle').onclick = () => { audio.set({ muted: !audio.state.muted }); };
+$('audio-volume').oninput = () => { const volume = Number($('audio-volume').value) / 100; audio.set({ volume, muted: volume > 0 ? false : audio.state.muted }); };
+audio.subscribe(state => { renderAudio(state); report({ type: 'audio-config', muted: state.muted, volume: state.volume }); });
+
 const reconnect = document.createElement('button'); reconnect.id = 'reconnect'; reconnect.type = 'button'; reconnect.textContent = '重新连接'; reconnect.hidden = true;
 $('status').after(reconnect);
 reconnect.onclick = () => { if (connection.canRetry && !connection.active) { reconnect.disabled = true; native('shell', { type: 'reconnect' }); } };
@@ -234,6 +384,8 @@ function renderUI() {
   if(preserveReading){scroller.scrollTop=oldScroll;preserveReading=false;}
   else if(inputRow)scroller.scrollTop=Math.max(0,(scroller.scrollTop||0)+inputRow.getBoundingClientRect().top-scroller.getBoundingClientRect().top);
   else scroller.scrollTop=nearBottom?scroller.scrollHeight:oldScroll;
+  renderSpeechBubble();
+  refreshQuickChat();
   $('status').textContent = connectionText() || view.error || (workSpeechView.state==='speaking'?'正在播报任务状态…':'') || (awaitingTranscript ? '正在转写…' : '') || (voicePhase === 'preparing' ? '正在准备麦克风…' : '') || ({ idle: wakeLabels[wakeUI.phase]||(wakeUI.phase==='error'?'唤醒已停止，请在网页重新开启':'我在这里'), listening: voicePhase === 'recording' ? '正在听你说 · 再点一次结束' : '正在准备麦克风…', thinking: '正在想怎么回应你…', speaking: '正在说话…', error: '这一轮没有完成' }[view.state]);
   $('thinking-indicator').hidden = !connection.connected || !!view.error || awaitingTranscript || !(awaitingTextTurn || view.state === 'thinking');
   reconnect.hidden = connection.active || !connection.canRetry; reconnect.disabled = connection.active;
@@ -271,8 +423,99 @@ function scheduleIntroductionAck() {
   });
 }
 $('conversation').addEventListener('scroll', scheduleIntroductionAck);
+// Speech, quick input and the main drawer have independent user-owned visibility.
+// Never derive either HUD switch from playback, connection or the drawer state.
+let speechHidden = false, quickChatHidden = false, speechProgress = null, speechMeasuredHeight = 84, quickMeasuredHeight = 56;
+function positionSpeechBubble() {
+  const node=$('speech-bubble'), pet=$('pet'); if(!node||!pet)return;
+  let left,top,width,maxHeight;
+  if (latestLayout && ['speechLeft','speechTop','speechWidth','speechMaxHeight','petLeft','petTop'].every(k=>Number.isFinite(latestLayout[k]))) {
+    left=latestLayout.speechLeft-latestLayout.petLeft; top=latestLayout.speechTop-latestLayout.petTop;
+    width=latestLayout.speechWidth; maxHeight=latestLayout.speechMaxHeight;
+  } else {
+    // Browser preview stacks the HUD above the character; AppKit fits it on Mac.
+    const p=pet.getBoundingClientRect();width=Math.min(260,innerWidth);maxHeight=Math.min(160,innerHeight/3);
+    const h=Math.min(node.offsetHeight||84,maxHeight);
+    left=p.width/2-width/2;top=-h-8;
+  }
+  Object.assign(node.style,{left:`${left}px`,right:'auto',top:`${top}px`,width:`${width}px`,maxHeight:`${maxHeight}px`});
+}
+function publishSpeechLayout() {
+  const measured=Math.ceil($('speech-bubble').getBoundingClientRect().height);
+  if(measured>0)speechMeasuredHeight=measured;
+  const quickMeasured=Math.ceil($('quick-chat').getBoundingClientRect().height);
+  if(quickMeasured>0)quickMeasuredHeight=quickMeasured;
+  native('shell',{type:'set_chat_hud',visible:!speechHidden,height:speechMeasuredHeight,quickHeight:quickMeasuredHeight});
+}
+function renderSpeechBubble() {
+  const node = $('speech-bubble'), textNode = $('speech-text');
+  if (!node || !textNode) return;
+  const last = [...chat.rows(view.characterId)].reverse().find(row => row.kind === 'assistant' && row.text?.trim());
+  const partial = speechProgress && view.accepts(speechProgress.scope) ? speechProgress.text : '';
+  const text = partial || last?.text || '我在这里，想聊什么？';
+  if (textNode.textContent !== text) {
+    const nearBottom = textNode.scrollHeight - textNode.scrollTop - textNode.clientHeight < 24;
+    textNode.textContent = text;
+    if (nearBottom) textNode.scrollTop = textNode.scrollHeight;
+  }
+  node.hidden = speechHidden;
+  $('speech-show').hidden = !speechHidden;
+  $('quick-chat').hidden = quickChatHidden;
+  $('quick-show').hidden = !quickChatHidden;
+  positionSpeechBubble();
+  requestAnimationFrame(clampHudsToScreen);
+}
+function bindChatVisibility() {
+  $('speech-hide').onclick = () => { speechHidden = true; renderSpeechBubble(); publishSpeechLayout(); $('speech-show').focus({preventScroll:true}); };
+  $('speech-show').onclick = () => { speechHidden = false; renderSpeechBubble(); publishSpeechLayout(); $('speech-hide').focus({preventScroll:true}); };
+  $('quick-hide').onclick = () => { quickChatHidden = true; renderSpeechBubble(); $('quick-show').focus({preventScroll:true}); };
+  $('quick-show').onclick = () => { quickChatHidden = false; renderSpeechBubble(); refreshQuickChat(); $('quick-text').focus({preventScroll:true}); };
+  renderSpeechBubble();
+  publishSpeechLayout();
+  const observer=new ResizeObserver(publishSpeechLayout);
+  observer.observe($('speech-bubble'));observer.observe($('quick-chat'));
+  window.addEventListener('resize',positionSpeechBubble);
+}
+
+// ── 快捷消息输入框（桌宠正下方，跟随窗口移动）─────────────────────────────────
+function refreshQuickChat() {
+  const input = $('quick-text'), send = $('quick-send'), box = $('quick-chat');
+  if (!input || !send) return;
+  send.disabled = !input.value.trim() || !connection.connected || chat.pending(view.characterId);
+  if (box) box.dataset.busy = String(chat.pending(view.characterId));
+  input.style.height = 'auto';
+  input.style.height = `${Math.min(96, Math.max(22, input.scrollHeight || 22))}px`;
+}
+function submitQuickChat() {
+  const input = $('quick-text');
+  if (!input) return;
+  const text = input.value.trim();
+  if (!text || !connection.connected || chat.pending(view.characterId)) return;
+  input.value = '';
+  // Same path as the main composer, so routing, drafts and errors behave identically.
+  const main = $('text');
+  if (main) main.value = '';
+  fitComposer();
+  refreshQuickChat();
+  command({ type: 'submit_text', text });
+}
+function bindQuickChat() {
+  const input = $('quick-text'), send = $('quick-send');
+  if (!input || !send) return;
+  input.addEventListener('input', refreshQuickChat);
+  input.addEventListener('keydown', event => {
+    // Enter sends; Shift+Enter keeps the newline; IME composition must not submit.
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    if (event.isComposing || event.keyCode === 229) return;
+    event.preventDefault();
+    submitQuickChat();
+  });
+  send.addEventListener('click', () => submitQuickChat());
+  refreshQuickChat();
+}
+
 function panel(open) {
-  if(petWindow.collapsed)return;
+  // Pet visibility and dialog visibility are independent; a collapsed pet used to block the panel.
   if(open&&panelOpen&&!$('drawer').hidden){workbench.schedulePresentation();scheduleIntroductionAck();return;}
   const epoch = ++panelEpoch;
   panelAnimation?.cancel(); panelAnimation = null;
@@ -282,7 +525,8 @@ function panel(open) {
     bindingKey = false; $('hotkey-bind').textContent = '设置按键';
   }
   const drawer = $('drawer');
-  panelOpen = open; drawer.inert = !open || petWindow.collapsed; $('open').hidden = open;
+  panelOpen = open; drawer.inert = !open; $('open').hidden = true;
+  document.body.dataset.panelOpen = String(open);
   $('open').setAttribute('aria-expanded', String(open));
   const animate = drawer.animate && !document.hidden && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
   const finishClose = () => { if (!panelOpen && epoch === panelEpoch && !drawer.hidden) { clearTimeout(panelCloseTimer); drawer.hidden = true; native('shell', { type: 'panel', open: false }); } };
@@ -302,7 +546,7 @@ function fitComposer() {
   const input = $('text'); input.style.height = 'auto';
   input.style.height = `${Math.min(120, Math.max(24, input.scrollHeight || 24))}px`;
 }
-const playback = new DesktopPlaybackController(new BrowserPlaybackDriver(), scope => view.accepts(scope)||workSpeechView.accepts(scope), (requestId, event) => {
+const playback = new DesktopPlaybackController(new BrowserPlaybackDriver(() => audio.gain), scope => view.accepts(scope)||workSpeechView.accepts(scope), (requestId, event) => {
   const workOutput=workSpeechView.accepts(event.scope);
   (workOutput?workSpeechView:view).receive({type:'playback',playback:event});
   if(workOutput&&event.type==='started'&&workNotice)workNotice.started=true;
@@ -310,7 +554,10 @@ const playback = new DesktopPlaybackController(new BrowserPlaybackDriver(), scop
   if(workOutput&&['ended','stopped','error'].includes(event.type)){workNotice=null;workSpeechView.reset();}
   renderUI();
   send({ channel: 'playback', requestId, event });
-  if (['ended','stopped','error'].includes(event.type)) renderer?.reset();
+  // A finished reply is followed by one randomized action; a cancelled or failed one
+  // simply returns to the ambient state.
+  if (event.type === 'ended') { if (typeof renderer?.afterSpeech === 'function') renderer.afterSpeech(); else renderer?.reset(); }
+  else if (['stopped','error'].includes(event.type)) renderer?.reset();
   if (event.type === 'started' || ['ended','stopped','error'].includes(event.type)) report({ type: 'playback-state', event: event.type, timingBasis: event.timingBasis, model: renderer?.ready ? renderer.snapshot() : null });
 });
 function stopPlayback(scope) { playback.stop(scope); }
@@ -439,16 +686,22 @@ async function receive(message, generation) {
     const e = message.event;
     if(e.type==='turn'&&e.input.kind==='text'&&(!textRequestId||e.input.clientRequestId!==textRequestId))return;
     if(e.type==='reply'&&!scopeEquals(companionRoute,e.reply.scope))return;
+    if(e.type==='reply_progress'&&(!scopeEquals(companionRoute,e.scope)||typeof e.text!=='string'))return;
     if (e.type === 'turn' && e.input.kind === 'voice' && !(invitationPending && !e.input.clientRequestId) && (!voiceRequestId || e.input.clientRequestId !== voiceRequestId)) return;
     // Work presentation may reset before a late ASR event; input identity is independent.
     const accepted = e.type==='transcript' ? scopeEquals(inputScope,e.scope) : view.receive(e);
-    if(accepted&&e.type==='turn')inputScope=e.input.scope;
+    if(accepted&&e.type==='turn'){inputScope=e.input.scope;speechProgress=null;}
+    if(accepted&&e.type==='reply_progress'){
+      speechProgress={scope:e.scope,text:e.text};
+      // Streaming changes only the HUD. Preserve reading selection/focus in the main log.
+      renderSpeechBubble();return;
+    }
     if(accepted&&e.type==='transcript')awaitingTranscript=false;
-    if(accepted&&e.type==='error'){captureFeedback.stop();inputScope=null;awaitingTranscript=false;}
+    if(accepted&&e.type==='error'){speechProgress=null;captureFeedback.stop();inputScope=null;awaitingTranscript=false;}
     if (accepted && ['turn', 'error'].includes(e.type)) awaitingTextTurn = false;
     if (accepted && e.type === 'turn') { if (e.input.kind === 'text') chat.acknowledge(e.input.scope, true); else chat.bindVoice(e.input.scope); }
     if (accepted && e.type === 'transcript') chat.transcript(e.scope, e.text);
-    if (accepted && e.type === 'reply' && scopeEquals(companionRoute,e.reply.scope)) { chat.reply(e.reply.scope, e.reply.text); renderer?.presentReply?.(e.reply); }
+    if (accepted && e.type === 'reply' && scopeEquals(companionRoute,e.reply.scope)) { chat.reply(e.reply.scope, e.reply.text); speechProgress = null; renderer?.presentReply?.(e.reply); renderUI(); }
     if (accepted && e.type === 'error') { hold.clear(); voiceRequestId = null; invitationPending = false; chat.cancelVoice(view.characterId); chat.failPending(view.characterId); $('text').value = chat.draft(view.characterId); }
     if (accepted && (e.type === 'error' || e.type === 'presentation' && e.presentation.state === 'error')) { captureFeedback.stop();void stopPlayback(); stopCapture(); renderer?.reset(); }
     if (accepted && e.type === 'turn') { if (playback.scope && !scopeEquals(playback.scope, e.input.scope)) void stopPlayback(); if (capturing && !scopeEquals(capturing.scope, e.input.scope)) stopCapture(); renderer?.reset({ preserveAttention: e.input.kind === 'voice' }); }
@@ -465,6 +718,8 @@ async function receive(message, generation) {
       if(isWorkSpeech)workNotice.playRequestId=message.requestId;
       if(isWorkSpeech)workSpeechView.expression=message.tts.expression??workSpeechView.expression;
       const bytes = bytesFromBase64(message.audioBase64); message.audioBase64 = '';
+      // A dynamic reply always wins the output; an action line never talks over it.
+      voiceLines.stop();
       await playback.play(message.requestId, message.tts, bytes);
       return;
     }
@@ -504,7 +759,10 @@ async function receive(message, generation) {
     send({ channel: 'rpc_error', requestId: message.requestId, ...(scope ? { scope } : {}), error: failure, message: text }, generation);
   }
 }
-window.petBridge = { receive, connectionChanged, hotkeyConfig, hotkeyEvent, displayConfig: config => {
+window.petBridge = { receive, connectionChanged, hotkeyConfig, hotkeyEvent, audioConfig: config => { audio.receive(config); },
+ // Settings pushed by the native host after load or after any set_motion round-trip.
+ motionConfig: applyHostMotionConfig,
+ voiceLinesState: async () => ({ enabled: voiceLines.enabled, ...voiceLines.stats, playing: voiceLines.playing }), displayConfig: config => {
  display.receive(config); petWindow.receive(config);
  if (['video','live2d'].includes(config.rendererKind) && config.rendererKind !== rendererKind) { rendererKind = config.rendererKind; if(rendererBooted) void selectRenderer(rendererKind); }
  initialDisplayResolve?.(); initialDisplayResolve=undefined;
@@ -558,12 +816,304 @@ window.addEventListener('pagehide', () => { display.cancel(); connectionChanged(
 window.addEventListener('error', e => report({ type: 'script-error', message: e.message }));
 window.addEventListener('unhandledrejection', e => report({ type: 'promise-error', message: String(e.reason) }));
 renderUI(); native('shell', { type: 'ready' });
+
+// ---- frame cadence and motion settings (module scope: the host callback must reach these) ----
+// The display drives cadence; the user's budget decides how often we draw.
+const frameScheduler = new FrameScheduler({ rate: motionConfig.rate });
+
+// Codex owns the renderer module. A capability is called only when it really exists, and a missing
+// one is reported once instead of being replaced with a local guess that would quietly diverge.
+const missingRendererCapabilities = new Set();
+function rendererCapability(name, ...args) {
+  const fn = renderer?.[name];
+  if (typeof fn !== 'function') {
+    if (renderer && !missingRendererCapabilities.has(name)) { missingRendererCapabilities.add(name); report({ type: 'renderer-capability-missing', name }); }
+    return undefined;
+  }
+  try { return fn.apply(renderer, args); }
+  catch (error) { report({ type: 'renderer-capability-failed', name, message: String(error?.message ?? error) }); return undefined; }
+}
+
+// The renderer that last received an action request. A settings change must not restart a transient
+// action or re-enter Sleep, so a request is repeated only for a brand-new renderer or an explicit
+// choice.
+let animationOwner = null;
+// The drag pose is interaction state, not a user selection; random actions must stand aside for it.
+let dragActive = false;
+
+// ---- random idle actions -----------------------------------------------------------------------
+// Only transient behaviours take part. Talking is deliberately absent (a silent request would fight
+// the rule that the mouth moves only for real audio), and Sleep/Drag are intent states
+// that belong to the user or to an interaction, never to a dice roll.
+const RANDOM_ACTIONS = Object.freeze(['Blink', 'LookAt', 'Breathing', 'Happy', 'Surprised', 'Shy', 'Interact']);
+const RANDOM_INTERVALS = Object.freeze({short: 8_000, medium: 18_000, long: 40_000});
+const RANDOM_INTERVAL_LABELS = Object.freeze({short: '频繁', medium: '适中', long: '偶尔'});
+let randomActionConfig = { enabled: true, interval: 'medium' };
+
+const readStoredRandom = () => { try { return JSON.parse(localStorage.getItem('petRandomActions') ?? 'null'); } catch { return null; } };
+const writeStoredRandom = value => { try { localStorage.setItem('petRandomActions', JSON.stringify(value)); } catch {} };
+
+/** The action a dice roll lands on, or null when it must not play at all. Pure and testable. */
+function chooseRandomAction({enabled, actions, random = Math.random}) {
+  if (!enabled || !actions?.length) return null;
+  const roll = Number(random());
+  if (!Number.isFinite(roll)) return null;
+  const index = Math.min(actions.length - 1, Math.max(0, Math.floor(roll * actions.length)));
+  return actions[index] ?? null;
+}
+
+/** Whether an idle random action may play right now. Pure: the caller supplies every fact. */
+function randomActionAllowed({enabled, collapsed, hidden, busy, speaking, dragging, currentState}) {
+  if (!enabled || collapsed || hidden) return false;
+  if (busy || speaking || dragging) return false;
+  // Only from a settled idle pose, so the user's Sleep, a playing clip or an interaction is never cut.
+  return currentState === 'Idle';
+}
+
+/** Next delay for the chosen cadence, jittered so the pet never feels metronomic. */
+function nextRandomDelay(interval, random = Math.random) {
+  const base = RANDOM_INTERVALS[interval] ?? RANDOM_INTERVALS.medium;
+  const roll = Number(random());
+  const factor = Number.isFinite(roll) ? 0.6 + Math.min(1, Math.max(0, roll)) * 0.8 : 1;
+  return Math.round(base * factor);
+}
+function requestAnimation({ force = false } = {}) {
+  if (!renderer) return undefined;
+  if (!force && animationOwner === renderer) return undefined;
+  animationOwner = renderer;
+  const accepted = rendererCapability('setAnimationState', selectedAnimation);
+  if (accepted === false) report({ type: 'animation-state-rejected', state: selectedAnimation });
+  return accepted;
+}
+/** An explicit choice from the user. It always reaches the renderer, so re-picking the same
+ * transient action replays it instead of being swallowed by a de-duplication guard. */
+function selectAnimation(name) {
+  selectedAnimation = typeof name === 'string' && name ? name : 'Idle';
+  return requestAnimation({ force: true });
+}
+
+/**
+ * The drag pose is temporary and is applied straight to the renderer, so it never becomes the
+ * user's selection: releasing hands control back to what the user actually picked rather than
+ * requesting Drag a second time.
+ */
+function applyDragState(dragging) {
+  dragActive = Boolean(dragging);
+  if (dragging) { rendererCapability('setAnimationState', 'Drag'); return undefined; }
+  return requestAnimation({ force: true });
+}
+function applyMotionConfig({ persist = false, requestCurrentAnimation = false } = {}) {
+  frameScheduler.configure({ rate: motionConfig.rate });
+  rendererCapability('configureMotion', motionConfig);
+  // Only a new renderer asks for the current action; a knob change or a host round-trip must not
+  // restart the animation that is already playing.
+  if (requestCurrentAnimation) requestAnimation({ force: true });
+  if (persist) {
+    if (hosted) native('shell', { type: 'set_motion', settings: motionConfig, animation: selectedAnimation });
+    else writeStoredMotion({ settings: motionConfig, animation: selectedAnimation });
+  }
+}
+
+/**
+ * The core's gaze convention: x and y run -1..1 with the origin at the centre of the character and
+ * y pointing up. Feeding it 0..1 coordinates would park the gaze right of centre and invert the
+ * vertical axis, so the conversion lives here and nowhere else.
+ */
+function toLookAtPoint(clientX, clientY, box) {
+  if (!box || !Number.isFinite(box.width) || !Number.isFinite(box.height) || box.width <= 0 || box.height <= 0) return null;
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+  return {
+    x: Math.max(-1, Math.min(1, ((clientX - box.left) / box.width) * 2 - 1)),
+    y: Math.max(-1, Math.min(1, 1 - ((clientY - box.top) / box.height) * 2)),
+  };
+}
+
+/**
+ * Coarse screen partition, not an ArtMesh hit test: the character box is split at 38% of its height
+ * so a click on the upper part is treated as the head and the rest as the body. Deliberately
+ * approximate and never to be described as precise model hit testing.
+ */
+function regionForClick(event) {
+  const box = document.getElementById('character')?.getBoundingClientRect?.();
+  if (!box || !box.height || !Number.isFinite(event?.clientY)) return 'body';
+  return (event.clientY - box.top) / box.height < 0.38 ? 'head' : 'body';
+}
+
+// Fires at most once per interval; every gate is re-checked here because the pose can change at any
+// time (a clip starts, the window collapses, the user drags).
+let nextRandomAt = 0;
+function maybePlayRandomAction(at) {
+  if (!randomActionConfig.enabled) return;
+  const state = renderer?.ready ? renderer.snapshot?.()?.animation?.state : undefined;
+  if (!randomActionAllowed({
+    enabled: randomActionConfig.enabled,
+    collapsed: Boolean(petWindow.collapsed),
+    hidden: Boolean(document.hidden),
+    busy: Boolean(playback.busy),
+    speaking: workSpeechView.state === 'speaking',
+    dragging: dragActive,
+    currentState: state,
+  })) return;
+  if (at < nextRandomAt) return;
+  nextRandomAt = at + nextRandomDelay(randomActionConfig.interval);
+  const action = chooseRandomAction({ enabled: true, actions: RANDOM_ACTIONS });
+  if (!action) return;
+  // Sent straight to the renderer, so the random action never becomes the user's own selection.
+  rendererCapability('setAnimationState', action);
+  report({ type: 'random-action', state: action });
+}
+
+let lastStatsPaint = 0;
+function updateMotionStats() {
+  const node = document.getElementById('motion-stats');
+  if (!node) return;
+  const now = performance.now();
+  if (now - lastStatsPaint < 250) return;
+  lastStatsPaint = now;
+  const s = frameScheduler.stats();
+  // Every number is a measured sample; nothing here is extrapolated or fixed.
+  node.textContent = `帧率 ${s.fps.toFixed(1)} · 渲染耗时 p95 ${s.p95RenderMs.toFixed(1)}ms · 均值 ${s.meanRenderMs.toFixed(1)}ms · 采样 ${s.samples} · 预算 ${s.rate === 'high' ? '跟随刷新率' : s.rate === 'eco' ? '30Hz' : '60Hz'}`;
+}
+
+/**
+ * Settings pushed by the native host after load or after any set_motion round-trip. The shared
+ * normaliser is authoritative for the five fields; the page does not re-clamp them itself. Named
+ * and module-scoped so it can be executed directly by the tests.
+ */
+function applyHostMotionConfig(config) {
+  if (!config || typeof config !== 'object') return undefined;
+  const changedAnimation = typeof config.animation === 'string' && config.animation && config.animation !== selectedAnimation;
+  motionConfig = normalizeMotionSettings(config, motionConfig);
+  if (typeof config.animation === 'string' && config.animation) selectedAnimation = config.animation;
+  bindMotionUi();
+  // A round-trip echoes the same action back; only a real change may request one.
+  return applyMotionConfig({ requestCurrentAnimation: changedAnimation });
+}
+
+function bindMotionUi() {
+  const animation = document.getElementById('motion-animation');
+  const amount = document.getElementById('motion-amount');
+  const speed = document.getElementById('motion-speed');
+  const frequency = document.getElementById('motion-frequency');
+  const tracking = document.getElementById('motion-tracking');
+  const rate = document.getElementById('motion-rate');
+  if (animation) { animation.value = selectedAnimation; animation.onchange = () => { selectAnimation(animation.value); applyMotionConfig({ persist: true }); }; }
+  const bindRange = (node, key) => {
+    if (!node) return;
+    node.value = String(motionConfig[key]);
+    node.oninput = () => { motionConfig = normalizeMotionSettings({ [key]: Number(node.value) }, motionConfig); applyMotionConfig({ persist: false }); };
+    node.onchange = () => applyMotionConfig({ persist: true });
+  };
+  bindRange(amount, 'amount'); bindRange(speed, 'speed'); bindRange(frequency, 'frequency');
+  if (tracking) {
+    tracking.checked = motionConfig.tracking;
+    tracking.onchange = () => {
+      motionConfig = normalizeMotionSettings({ tracking: tracking.checked }, motionConfig);
+      applyMotionConfig({ persist: true });
+      // Turning tracking off must release the gaze instead of leaving it frozen where it was.
+      if (!motionConfig.tracking) rendererCapability('setLookAt', null);
+    };
+  }
+  if (rate) { rate.value = motionConfig.rate; rate.onchange = () => { motionConfig = normalizeMotionSettings({ rate: rate.value }, motionConfig); applyMotionConfig({ persist: true }); }; }
+  const fit = document.getElementById('motion-fit-drawer');
+  if (fit) fit.onclick = () => fitModelToDrawer();
+  const random = document.getElementById('motion-random');
+  const randomInterval = document.getElementById('motion-random-interval');
+  if (randomInterval) {
+    randomInterval.replaceChildren(...Object.entries(RANDOM_INTERVAL_LABELS).map(([value, label]) => {
+      const option = document.createElement('option');
+      option.value = value; option.textContent = label;
+      return option;
+    }));
+    randomInterval.value = randomActionConfig.interval;
+    randomInterval.onchange = () => {
+      randomActionConfig = { ...randomActionConfig, interval: RANDOM_INTERVALS[randomInterval.value] ? randomInterval.value : 'medium' };
+      writeStoredRandom(randomActionConfig);
+      // A cadence change takes effect from now, not after the old, longer wait.
+      nextRandomAt = 0;
+    };
+  }
+  if (random) {
+    random.checked = randomActionConfig.enabled;
+    random.onchange = () => {
+      randomActionConfig = { ...randomActionConfig, enabled: random.checked };
+      writeStoredRandom(randomActionConfig);
+      nextRandomAt = 0;
+      report({ type: 'random-actions', enabled: randomActionConfig.enabled });
+    };
+  }
+}
+
 let frame = 0, lastRender = 0;
+// Last local-voice waveform sample, refreshed once per drawn frame.
+let localVoice = { playing: false, mouth: 0 };
+// Tracks the local clip's playing -> ended edge so it is reported exactly once.
+let localVoicePlaying = false;
 {
+  // Loaded before the first action so the greeting line is available immediately.
+  await voiceLines.load(); report({ type: 'voice-lines', enabled: voiceLines.enabled, files: voiceLines.stats.files });
   await initialDisplay; rendererBooted = true; await selectRenderer(rendererKind);
-  function animate(at) { requestAnimationFrame(animate); if (at - lastRender > 32) { if (view.expireInvitation(Date.now())) renderUI(); const shown=workSpeechView.state==='speaking'?workSpeechView:view;if (!petWindow.collapsed && !document.hidden) renderer?.updateView(shown,voicePhase==='preparing'?'listening':shown.state,(work.focused||workInputSource==='native')&&shown===view); lastRender = at; frame++; } }
+  // A brand-new renderer starts on its own defaults, so it is the one case that asks for the
+  // current action; later settings changes must not restart what is already playing.
+  applyMotionConfig({ requestCurrentAnimation: true });
+  document.getElementById('character')?.addEventListener('pointermove', event => {
+    if (!motionConfig.tracking) return;
+    const box = event.currentTarget.getBoundingClientRect?.();
+    rendererCapability('setLookAt', toLookAtPoint(event.clientX, event.clientY, box));
+  });
+  // Leaving the character must release the gaze instead of freezing it.
+  document.getElementById('character')?.addEventListener('pointerleave', () => rendererCapability('setLookAt', null));
+  const stored = readStoredRandom();
+  if (stored && typeof stored === 'object') randomActionConfig = {
+    enabled: typeof stored.enabled === 'boolean' ? stored.enabled : randomActionConfig.enabled,
+    interval: RANDOM_INTERVALS[stored.interval] ? stored.interval : randomActionConfig.interval,
+  };
+  bindMotionUi(); applyMotionConfig(); bindQuickChat(); bindChatVisibility();
+
+  function animate(at) {
+    requestAnimationFrame(animate);
+    // A hidden window or the collapsed ball tells the scheduler to resync rather than bank time,
+    // so restoring cannot replay the gap as a burst of frames.
+    if (!frameScheduler.tick(at, { visible: !petWindow.collapsed && !document.hidden })) return;
+    if (view.expireInvitation(Date.now())) renderUI();
+    const shown = workSpeechView.state === 'speaking' ? workSpeechView : view;
+    // Exactly one sample per drawn frame. The value is cached so the sparse telemetry below never
+    // advances the smoothing a second time.
+    localVoice = voiceLines.sample();
+    // Dynamic TTS and workbench speech keep their existing path; only when neither of them owns the
+    // output does a local line speak. `playback.busy` is part of the test, not just the view state,
+    // so a TTS reply that is still loading cannot be raced by a local clip.
+    maybePlayRandomAction(at);
+    const voiceOwnsOutput = shown.state === 'speaking' || playback.busy;
+    // Handed over as a shallow copy: the backend view and its scope are never modified, and the copy
+    // carries the state the state machine expects for speech.
+    const viewForRenderer = localVoice.playing && !voiceOwnsOutput
+      ? { ...shown, state: 'speaking', mouth: localVoice.mouth }
+      : shown;
+    const started = performance.now();
+    renderer?.updateView(viewForRenderer, voicePhase === 'preparing' ? 'listening' : viewForRenderer.state, (work.focused || workInputSource === 'native') && shown === view);
+    // Reported once per playing -> ended transition, deliberately after updateView so the value is
+    // the renderer's own mouth rather than the waveform's last sample.
+    if (localVoice.playing) localVoicePlaying = true;
+    else if (localVoicePlaying) {
+      localVoicePlaying = false;
+      report({ type: 'local-voice-ended', source: 'local-voice', mouth: renderer?.ready ? renderer.snapshot().mouth : null });
+    }
+    // Only a real measurement is recorded; the statistics shown are these samples.
+    frameScheduler.record(performance.now() - started);
+    lastRender = at; frame += 1;
+    updateMotionStats();
+  }
   requestAnimationFrame(animate);
   // Bounded telemetry of model parameters only, never transcript/audio/frame contents.
-  let lastTrace = 0;
+  let lastTrace = 0, lastLocalTrace = 0;
   setInterval(() => { if (playback.busy && renderer?.ready && performance.now() - lastTrace > 700) { lastTrace = performance.now(); report({ type: 'speaking-parameters', ...renderer.snapshot() }); } }, 500);
+  // Sparse telemetry for the local clips, so the native side can verify a real wav opens and closes
+  // the mouth. Parameters only: no audio, no transcript, no keys. Rate-limited to one per 700 ms.
+  setInterval(() => {
+    if (!localVoice.playing || !renderer?.ready) return;
+    if (performance.now() - lastLocalTrace <= 700) return;
+    lastLocalTrace = performance.now();
+    report({ type: 'speaking-parameters', source: 'local-voice', mouth: localVoice.mouth, ...renderer.snapshot() });
+  }, 500);
 }

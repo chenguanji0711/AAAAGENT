@@ -59,7 +59,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, smoke = fals
   const c: TrialConfiguration = { version: 1, product: 'companion-v1', phaseId: 'local-trial-controlled', purpose: smoke ? 'smoke-text' : 'user-trial', ...(smoke ? {smokeInput:'合成文字'} : {}), projectRoot, sourceRevision: 'a'.repeat(40),
     runtimeFiles: Object.fromEntries(['dist/app/trial-backend.js', 'dist/app/trial-launcher.js', 'desktop/build/renderer.js',
       'desktop/build/星月陪伴.app/Contents/MacOS/DesktopPet'].map(p => [`code/desktop-pet/${p}`, hash('controlled')])),
-    database: join(projectRoot, 'data/desktop-pet/companion.sqlite'), budgetFile: join(projectRoot, 'artifacts/W0-I/model-evaluation/budget.json'),
+    database: join(projectRoot, '.local/data/companion.sqlite'), budgetFile: join(projectRoot, '.local/model-evaluation/budget.json'),
     budgetBatchId: 'original-fixture-batch', limitMicros: 20000000, phaseLimitMicros: 20000000, maxCalls: 200,
     operationLimits: { admission: 40, dialogue: 40, memory_turn: 40, summary: 20, perception: smoke ? 0 : 20, tts: 40 },
     memory: { mode: 'strict', scheduling: 'semantic-admission', timeoutMs: 300000 },
@@ -153,7 +153,7 @@ test('launch plan supplies the real native arguments and refuses changed build b
   const priorConfig = join(priorDirectory, 'config.json'), priorActivation = join(priorDirectory, 'activation.json');
   await mkdir(priorDirectory, { recursive: true });
   await writeFile(priorConfig, 'frozen-smoke-config'); await writeFile(priorActivation, 'frozen-smoke-activation');
-  assert.equal(paths.configFile, join(priorDirectory, 'user-trial/config.json'));
+  assert.equal(paths.configFile, join(f.c.projectRoot, '.local/model-evaluation/trial/user-trial/config.json'));
   for (const name of Object.keys(f.c.runtimeFiles)) { const path = join(f.c.projectRoot, name); await mkdir(dirname(path), { recursive: true }); await writeFile(path, 'controlled'); }
   await mkdir(dirname(paths.configFile), { recursive: true });
   await writeFile(paths.configFile, await readFile(f.configFile)); await writeFile(paths.activationFile, await readFile(f.activationFile));
@@ -258,7 +258,7 @@ test('reviewed trial memory unknown costs survive restart beyond three entries w
   for(let i=1;i<=4;i++){
     const id=`00000000-0000-4000-8000-${String(i).padStart(12,'0')}`;
     const entry={operationId:`W0-I:${f.c.phaseId}:memory_turn:${id}`,model:m.model,reservedMicros:m.reservationMicros,actualMicros:null,status:'unknown' as const};
-    const auditFile=join(f.c.projectRoot,`artifacts/W0-I/model-evaluation/unknown-cost-reviews/${id}.json`);
+    const auditFile=join(f.c.projectRoot,`.local/model-evaluation/unknown-cost-reviews/${id}.json`);
     const audit=JSON.stringify({kind:'unknown_trial_reservation_upper_bound_review',status:'applied',actualChargeStillUnknown:true,phaseId:f.c.phaseId,originalEntry:entry,correctedEntry:entry,bounds,maximumMicros:10911744});
     await mkdir(dirname(auditFile),{recursive:true});await writeFile(auditFile,audit);
     entries.push(entry);reviews.push({operationId:entry.operationId,model:entry.model,reservedMicros:entry.reservedMicros,auditFile,auditSha256:hash(audit)});
@@ -339,6 +339,31 @@ test('independent ASR proves WAV duration, preserves unknown reservations, and e
   assert.equal(calls,2);assert.equal(keys,2);
   await assert.rejects(transport.request({...endpoint,...c.models.perception},scope,'perception',{messages:[{role:'user',content:[{type:'input_audio',input_audio:{data}}]}]},new AbortController().signal),/Visual request/);
   assert.equal(calls,2);await store.releaseScope(scope);
+});
+
+test('QwenAudio ASR preserves capture rate through the guard and rejects altered duration or sample rate', async t => {
+  const f=await fixture(t);
+  const {pcm16Wav}=await import('../../media/wav.js');
+  const {MemoryMediaStore}=await import('../../media/store.js');
+  const {QwenAsrProvider}=await import('../../providers/qwen-asr.js');
+  const c:TrialConfiguration={...f.c,models:{...f.c.models,asr:{...f.c.models.tts,
+    model:'qwen-audio-3.0-asr-flash',endpoint:'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+    audioMicrosPerSecond:220,inputMicrosPerToken:0,outputMicrosPerToken:0}}};
+  let calls=0,settled:unknown;
+  const authorizer={async authorize(){return {async settle(outcome:unknown){settled=outcome;}}}};
+  const transport=new TrialTransport(c,async(_url,init)=>{calls++;
+    const body=JSON.parse(String(init?.body));assert.equal(body.input.messages.length,1);
+    assert.equal(body.parameters.sample_rate,'48000');
+    return Response.json({output:{text:'测试语音。'},usage:{duration:1.01}});
+  });
+  const endpoint={model:c.models.asr!.model,endpoint:c.models.asr!.endpoint,apiKey:()=> 'synthetic',authorizer};
+  const store=new MemoryMediaStore(),audio=await store.put(scope,pcm16Wav(new Float32Array(48003),48000),'audio/wav');
+  assert.equal((await new QwenAsrProvider(endpoint,store,transport).transcribe({scope,audio},new AbortController().signal)).transcript,'测试语音。');
+  assert.deepEqual((settled as {usage:unknown}).usage,{duration:1.01});
+  const data='data:audio/wav;base64,'+Buffer.from(await store.read(scope,audio)).toString('base64');
+  await assert.rejects(transport.request(endpoint,scope,'asr',{input:{messages:[{role:'user',content:[{type:'input_audio',input_audio:{data}}]}]},parameters:{format:'wav',sample_rate:'48000'}},new AbortController().signal,undefined,0.1),/duration mismatch/);
+  await assert.rejects(transport.request(endpoint,scope,'asr',{input:{messages:[{role:'user',content:[{type:'input_audio',input_audio:{data}}]}]},parameters:{format:'wav',sample_rate:'16000'}},new AbortController().signal,undefined,48003/48000),/sample rate mismatch/);
+  assert.equal(calls,1);await store.releaseScope(scope);
 });
 
 test('MiniMax request guard rejects explicit emotion before authorization, key access or HTTP', async t => {

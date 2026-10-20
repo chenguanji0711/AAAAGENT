@@ -38,8 +38,12 @@ export async function readPresentationCatalog(projectRoot: string): Promise<Pres
     throw error;
   }
   const catalog = validatePresentationCatalog(JSON.parse(await readFile(resolve(base, 'presets.json'), 'utf8')));
-  const refs = JSON.parse(manifest.toString('utf8')).FileReferences;
-  const paths = [...new Set(['pet.model3.json', refs.Moc, refs.Physics, ...refs.Expressions.map((x: { File: string }) => x.File), ...Object.values(refs.Motions as Record<string, { File: string }[]>).flat().map(x => x.File)].filter(Boolean))] as string[];
+  // Physics, Expressions and Motions are optional in the Cubism format, so a rig that
+  // omits them must not break the catalog check. The hashed set is unchanged.
+  const refs = JSON.parse(manifest.toString('utf8'))?.FileReferences ?? {};
+  const expressions = Array.isArray(refs.Expressions) ? refs.Expressions as { File: string }[] : [];
+  const motions = refs.Motions && typeof refs.Motions === 'object' ? Object.values(refs.Motions as Record<string, { File: string }[]>) : [];
+  const paths = [...new Set(['pet.model3.json', refs.Moc, refs.Physics, ...expressions.map(x => x.File), ...motions.flat().map(x => x.File)].filter(Boolean))] as string[];
   const pieces: string[] = [];
   for (const path of paths.sort()) {
     if (path.startsWith('/') || path.split('/').some(part => !part || part === '.' || part === '..')) throw new Error('Invalid model reference');

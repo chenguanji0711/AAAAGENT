@@ -41,5 +41,18 @@
       "previousInventory": "e61c3653268557e85a97aa66e1b4295ef19650971cc9179149ddd6932eb88373",
       "indexSha256": "ecaaf397280d1bdea7a0c9569fd011795d6d22b28d246c9c72cd46b7f5b898ad"
     }
+  },
+  "macosRuntime": {
+    "version": 1,
+    "package": "AAAAGENT-MACOS-T3-20261010",
+    "platform": "darwin",
+    "arch": "arm64",
+    "sourceCommit": "c13f7d93fff0f578886985a3f673b4b21b7f6ac8",
+    "sourceLockSha256": "45cec1eab99351cfbf828ba46b8e84b029e262bcbd1e7d8bc867687e2dfe65d1",
+    "inventorySha256": "96263da3a7f4cc0d22ea4b729ec297f12a515224e16d3758640818ca9ca4a290",
+    "nativeSourceLockSha256": "8e995f010a7fa08e85b2ed0a039bd15dfc547a3ac2c51ab4cf2c8e517a8cc1d5",
+    "upstreamSourceLockSha256": "89aae7df38555c51a7f36d20f25a34a80cb393c7c5ff11d90c55cc802fd71aa0",
+    "serverBundleSha256": "328f1b6bbcf8e8a2d1110a2fd224abfd44743bdb7726be3d6d656f06936d1111",
+    "markerSha256": "574bc18f3d75b294cf2898ea95c47c5398868826e54d9681da834cd9f3b113b3"
   }
 }

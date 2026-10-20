@@ -1,3 +1,6 @@
+> **macOS desktop-pet delivery branch · 2026-10-20**
+> This derivative adds persistent independent chat controls, streamed text, animation/audio integration, model validation, redacted backend startup diagnostics and stable desktop placement. See [delivery and build notes](docs/MACOS-DELIVERY-20261020.md). The upstream noncommercial attribution license is retained. Models, Cubism SDK, generated voices, private data and prebuilt application bundles are excluded.
+
 ## Mac / Windows development update · 2026-10-11
 
 Mac and Windows **0.3.0-dev.1** now share the October 10 handoff baseline: the newer T3 Code / Flow workbench, Codex / DeepSeek Harness connections, and the new pet. Mac uses Swift / WebKit and the root source tree; Windows uses Electron under `windows/`. Local ASR, TTS and Ollama dialogue extensions are currently available on Windows only.

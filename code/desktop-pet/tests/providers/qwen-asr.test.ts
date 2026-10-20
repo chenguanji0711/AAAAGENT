@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { MemoryMediaStore } from '../../media/store.js';
 import { pcm16Wav } from '../../media/wav.js';
 import { ProviderTransport, type CallRequest } from '../../providers/transport.js';
-import { QwenAsrProvider, QWEN_ASR_MODEL, parseAsrResponse } from '../../providers/qwen-asr.js';
+import { QwenAsrProvider, QWEN_ASR_MODEL, QWEN_AUDIO_ASR_MODEL, parseAsrResponse } from '../../providers/qwen-asr.js';
 const scope = { characterId: 'companion', sessionId: 'synthetic', turnId: 'asr', generation: 1 };
 const completion = (content: unknown, annotations: unknown = []) => ({ choices: [{ finish_reason: 'stop', message: { content, annotations } }], usage: { seconds: .1 } });
-async function fixture() {
-  const store = new MemoryMediaStore(), bytes = pcm16Wav(new Float32Array(1600).fill(.2), 16000);
+async function fixture(sampleRate = 16000) {
+  const store = new MemoryMediaStore(), bytes = pcm16Wav(new Float32Array(sampleRate / 10).fill(.2), sampleRate);
   return { store, bytes, input: { scope: { ...scope }, audio: await store.put(scope, bytes, 'audio/wav') } };
 }
 const config = { model: QWEN_ASR_MODEL, endpoint: 'https://unit.invalid/chat', apiKey: () => 'synthetic', authorizer: { async authorize() { throw Error('unused'); } } };
@@ -28,6 +28,40 @@ test('dedicated ASR sends full audio only, auto language and duration budget; or
     assert.equal(budget!.operation, 'asr'); assert.equal(budget!.audioSeconds, .1); assert.equal(budget!.textCharacters, undefined);
   }
   assert.equal(calls, 5); assert.deepEqual(await f.store.read(scope, f.input.audio), f.bytes); await f.store.releaseScope(scope);
+});
+test('QwenAudio ASR uses the native multimodal wire and returns the provider transcript', async () => {
+  const f = await fixture(); let budget: CallRequest | undefined;
+  const native = { ...config, model: QWEN_AUDIO_ASR_MODEL,
+    endpoint: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+    authorizer: { async authorize(request: CallRequest) { budget = request; return { async settle() {} }; } } };
+  const transport = new ProviderTransport(async (url, init) => {
+    assert.equal(url, native.endpoint);
+    const body = JSON.parse(String(init?.body));
+    assert.equal(body.model, QWEN_AUDIO_ASR_MODEL);
+    assert.deepEqual(body.parameters, { format: 'wav', sample_rate: '16000' });
+    assert.equal(body.input.messages[0].role, 'user');
+    assert.deepEqual(Uint8Array.from(Buffer.from(body.input.messages[0].content[0].input_audio.data.split(',')[1], 'base64')), f.bytes);
+    assert.equal(body.messages, undefined);
+    return Response.json({ output: { text: '你好，我是桌宠。' }, usage: { duration: .1 } });
+  });
+  const result = await new QwenAsrProvider(native, f.store, transport).transcribe(f.input, new AbortController().signal);
+  assert.equal(result.transcript, '你好，我是桌宠。');
+  assert.equal(budget?.audioSeconds, .1);
+  await f.store.releaseScope(scope);
+});
+test('QwenAudio ASR declares the actual 48 kHz Mac capture rate without rewriting audio', async () => {
+  const f = await fixture(48000);
+  const native = { ...config, model: QWEN_AUDIO_ASR_MODEL };
+  const transport = { async request(_config: unknown, _scope: unknown, _operation: unknown, body: any,
+    _signal: unknown, _characters: unknown, audioSeconds: unknown) {
+    assert.deepEqual(body.parameters, { format: 'wav', sample_rate: '48000' });
+    assert.deepEqual(Uint8Array.from(Buffer.from(body.input.messages[0].content[0].input_audio.data.split(',')[1], 'base64')), f.bytes);
+    assert.equal(audioSeconds, .1);
+    return { output: { text: '采样率测试。' } };
+  } };
+  const result = await new QwenAsrProvider(native, f.store, transport).transcribe(f.input, new AbortController().signal);
+  assert.equal(result.transcript, '采样率测试。');
+  await f.store.releaseScope(scope);
 });
 test('ASR annotations preserve only actual valid audio emotion and language, never default or reconcile conflicting classes', () => {
   for (const [wire, product] of [['neutral','neutral'],['happy','happy'],['sad','sad'],['angry','angry'],['fearful','fear'],['disgusted','disgust'],['surprised','surprise']]) {

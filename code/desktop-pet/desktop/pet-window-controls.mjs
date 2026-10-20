@@ -1,8 +1,9 @@
 // Private display controls. No backend, media or model state is changed here.
-export function installPetWindowControls({ get, shell, panelOpen, onCollapse, onRestore, onPetClick }) {
+export function installPetWindowControls({ get, shell, panelOpen, onCollapse, onRestore, onPetClick, onDragChange }) {
   let collapsed = false, requested = null, saved, pointer = null, suppressBallClick = false;
   function release() {
     const active = pointer; pointer = null;
+    if (active?.moved) onDragChange?.(false);
     if (active?.node.hasPointerCapture?.(active.id)) active.node.releasePointerCapture(active.id);
   }
   function apply(value) {
@@ -12,13 +13,16 @@ export function installPetWindowControls({ get, shell, panelOpen, onCollapse, on
     document.body.dataset.petCollapsed = String(value);
     get('pet').inert = value;
     get('pet-ball').hidden = !value;
-    if (value) { get('drawer').inert = true; get('pet-ball').focus({ preventScroll: true }); }
+    // The dialog is an independent surface: collapsing the pet must not lock it.
+    if (value) { get('pet-ball').focus({ preventScroll: true }); }
     else { onRestore(saved); saved = undefined; }
   }
   function request(value) {
     if (collapsed === value || requested === value) return;
     requested = value;
-    shell({ type: 'set_collapsed', collapsed: value, open: panelOpen() });
+    // While the dialog is open the window must stay large enough to show it, so the pet only
+    // hides itself in-page instead of shrinking the whole window out from under the drawer.
+    shell({ type: 'set_collapsed', collapsed: value && !panelOpen(), open: panelOpen() });
   }
   for (const id of ['pet-collapse', 'workbench-collapse', 'work-records-collapse']) {
     get(id).onclick = () => request(true);
@@ -35,6 +39,9 @@ export function installPetWindowControls({ get, shell, panelOpen, onCollapse, on
       if (pointer?.node !== node || pointer.id !== event.pointerId) return;
       const dx = event.screenX - pointer.x, dy = event.screenY - pointer.y;
       if (!Number.isFinite(dx) || !Number.isFinite(dy) || Math.abs(dx) + Math.abs(dy) <= 3 && !pointer.moved) return;
+      // The first movement past the threshold is what turns a press into a drag; the page uses
+      // that edge to hold a Drag pose and release it on pointerup.
+      if (!pointer.moved) onDragChange?.(true);
       pointer.moved = true;
       shell({ type: 'drag', dx, dy }); pointer.x = event.screenX; pointer.y = event.screenY;
     };
@@ -42,10 +49,13 @@ export function installPetWindowControls({ get, shell, panelOpen, onCollapse, on
       if (pointer?.node !== node || pointer.id !== event.pointerId) return;
       const moved = pointer.moved; release();
       if (id === 'pet-ball') suppressBallClick = moved;
-      else if (!moved) onPetClick();
+      else if (!moved) onPetClick(event);
     };
     node.onpointercancel = node.onlostpointercapture = event => {
-      if (pointer?.node === node && (event?.pointerId === undefined || pointer.id === event.pointerId)) pointer = null;
+      if (pointer?.node === node && (event?.pointerId === undefined || pointer.id === event.pointerId)) {
+        if (pointer.moved) onDragChange?.(false);
+        pointer = null;
+      }
     };
   }
   get('pet-ball').onclick = () => {

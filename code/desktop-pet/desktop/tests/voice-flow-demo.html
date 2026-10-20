@@ -1,0 +1,95 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8">
+<!-- Local demonstration of the shipped action-voice flow. It lives under tests/ so the
+     runtime fingerprint never registers it, and it imports the real modules and the real
+     cached clips from ../assets/voice/. The panel aligns itself with the pet window through
+     the normal displayConfig message, because the WKWebView viewport is the whole screen. -->
+<title>动作配音流程演示</title>
+<style>
+html,body{margin:0;background:transparent;font:11px -apple-system,"PingFang SC",sans-serif;color:#2f4560;overflow:hidden}
+#demo{position:absolute;left:0;top:0;width:340px;height:340px;box-sizing:border-box;
+ background:linear-gradient(160deg,#fbfdfffa,#e9f1fcf7);border:1px solid #c3d3e9;border-radius:14px;
+ padding:7px 8px;overflow:auto;box-shadow:0 4px 14px #29476a22}
+h1{font-size:12px;margin:0 0 5px}
+#sum{font-size:10px;color:#6b7f99;margin:0 0 5px;line-height:1.4}
+table{width:100%;border-collapse:collapse;font-size:10px}
+td{padding:2px 2px;border-bottom:1px solid #e2eaf5;vertical-align:top}
+td.n{color:#8fa2b8;width:12px}
+td.act{white-space:nowrap}
+td.res{text-align:right;white-space:nowrap}
+.ok{color:#2f7d4f}.no{color:#a05a6d}
+.file{color:#54719a;font-size:9px;line-height:1.35}
+</style>
+<script>
+// Registered before the module runs so the shell can deliver the real layout.
+window.__display = null;
+window.petBridge = {
+  displayConfig(config) { window.__display = config; window.__place?.(); },
+  receive() {}, connectionChanged() {}, hotkeyConfig() {}, hotkeyEvent() {}, audioConfig() {}, voiceLinesState() {}
+};
+try { window.webkit?.messageHandlers?.shell?.postMessage({ type: 'ready' }); } catch {}
+</script>
+</head><body>
+<div id="demo"><h1>动作配音流程 · 真实运行</h1><p id="sum">加载中…</p><table id="rows"></table></div>
+<script type="module">
+import { createVoiceLines, VOICE_COOLDOWN_MS } from '../voice-lines.mjs';
+import { createAudioOutput } from '../audio-output.mjs';
+
+const rows = document.getElementById('rows'), sum = document.getElementById('sum'), panel = document.getElementById('demo');
+const trace = value => { try { window.webkit?.messageHandlers?.diagnostic?.postMessage(value); } catch {} };
+/** The window only shows the slice the shell reports; align to it, otherwise fall back. */
+window.__place = () => {
+  const c = window.__display; if (!c || !Number.isFinite(c.petLeft)) return;
+  panel.style.left = `${Math.max(0, c.petLeft)}px`;
+  panel.style.top = `${Math.max(0, c.petTop)}px`;
+  panel.style.width = `${Math.max(200, c.petWidth - 12)}px`;
+  panel.style.height = `${Math.max(200, (Number(c.modelHeight) || 340) + 24)}px`;
+  trace({ type: 'voice-flow-demo-layout', petLeft: c.petLeft, petTop: c.petTop, petWidth: c.petWidth, modelHeight: c.modelHeight });
+};
+window.__place();
+await new Promise(resolve => { let n = 0; const poll = () => (window.__display || n++ > 20) ? resolve() : setTimeout(poll, 100); poll(); });
+window.__place();
+
+let clock = 0, busy = false;
+const audio = createAudioOutput({ initial: { muted: false, volume: 1 } });
+const lines = createVoiceLines({ base: new URL('../assets/voice/', location.href), gain: () => audio.gain,
+  busy: () => busy, now: () => clock });
+let step = 0;
+
+function row(action, outcome, detail, cls) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td class="n">${++step}</td><td class="act">${action}</td><td class="res ${cls}">${outcome}</td>`;
+  if (detail) { const extra = document.createElement('tr'); extra.innerHTML = `<td></td><td colspan="2" class="file">${detail}</td>`; rows.append(tr, extra); }
+  else rows.append(tr);
+  trace({ type: 'voice-flow-demo', step, action, outcome, detail: detail ?? null, muted: audio.state.muted, busy });
+}
+const played = async (action, note = '') => {
+  const before = { ...lines.stats };
+  const spoke = await lines.action(action);
+  const after = { ...lines.stats };
+  const delta = key => after[key] - before[key];
+  const file = after.lastFile;
+  if (spoke) row(action, '播放', `▶ ${file}${note ? ' · ' + note : ''}`, 'ok');
+  else if (delta('skippedBusy')) row(action, '让位', '语音回复正在播放，不叠加', 'no');
+  else if (delta('skippedSilent')) row(action, '静音', '当前静音，不出声', 'no');
+  else if (delta('skippedCooldown')) row(action, '冷却', `间隔未到（同类 ${VOICE_COOLDOWN_MS / 1000}s / 全局 5s）`, 'no');
+  else row(action, '跳过', '未映射或尚未就绪', 'no');
+  return { spoke, file };
+};
+
+const enabled = await lines.load();
+row('载入台词清单', enabled ? '就绪' : '缺少素材', `lines.json · ${lines.stats.files} 条本地音频`, enabled ? 'ok' : 'no');
+
+await played('pat-gentle', '真实动作：点击角色=摸头');
+await played('pat-gentle', '马上再摸一次');
+busy = true; await played('happy', '模拟百炼语音回复正在播报'); busy = false;
+audio.set({ muted: true }); await played('eat', '用户按下静音');
+audio.set({ muted: false });
+clock += VOICE_COOLDOWN_MS + 1000; await played('eat');
+clock += VOICE_COOLDOWN_MS + 1000; const a = await played('session-start', '问候');
+clock += VOICE_COOLDOWN_MS + 1000; const b = await played('session-start', '再问一次');
+row('同句不连续重复', a.file !== b.file && a.file && b.file ? '通过' : '未能判定',
+  a.file && b.file ? `${a.file} → ${b.file}` : '', a.file !== b.file ? 'ok' : 'no');
+
+sum.textContent = `台词 ${lines.stats.files} 条 · 已播 ${lines.stats.spoken} · 冷却跳过 ${lines.stats.skippedCooldown} · 让位 ${lines.stats.skippedBusy} · 静音跳过 ${lines.stats.skippedSilent} · 失败 ${lines.stats.failed}`;
+trace({ type: 'voice-flow-demo-summary', ...lines.stats, muted: audio.state.muted });
+</script></body></html>

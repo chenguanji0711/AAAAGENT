@@ -11,7 +11,7 @@ export function estimateTrialMicros(model: TrialModel, operation: TrialOperation
   if (!outcome.usage || typeof outcome.usage !== 'object') return null;
   const usage = outcome.usage as Record<string, unknown>;
   if (operation === 'asr') {
-    const seconds = usage.seconds;
+    const seconds = model.model === 'qwen-audio-3.0-asr-flash' ? usage.duration : usage.seconds;
     return typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0 && model.audioMicrosPerSecond !== undefined ? cost(Math.ceil(seconds) * model.audioMicrosPerSecond) : null;
   }
   if (operation === 'tts') {

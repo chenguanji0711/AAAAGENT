@@ -1,7 +1,10 @@
 import { createFaceEffects } from './video-pet-face-effects.mjs';
-import { catalogEntries, replyAction, workAction } from './video-pet-state.mjs';
+import { createVideoMatte } from './video-pet-matte.mjs';
+import { catalogEntries, presetActions, replyAction, workAction } from './video-pet-state.mjs';
 
 const icons = { heart:'♡', cry:'💧', thumb:'👍', questions:'???', cloud:'☁', anger:'╬', sparkle:'✦', sweat:'💧', breath:'〰' };
+/** States the pet holds on its own; a randomized flourish must never pick one of these. */
+const HELD_STATES = new Set(['idle','listening','thinking','working','waiting','rest']);
 /** One video element and one selected source. No full-library preloading or video/blob cache. */
 export class VideoPetRenderer {
   constructor(canvas, report = () => {}) {
@@ -10,7 +13,12 @@ export class VideoPetRenderer {
     this.root = document.createElement('div'); this.root.className = 'video-pet-root dsh-pet-root'; this.root.dataset.facing = 'left';
     this.video = document.createElement('video'); this.video.className = 'dsh-pet-video is-front';
     this.video.muted = true; this.video.playsInline = true; this.video.preload = 'none'; this.video.setAttribute('aria-label', '视频鲸鱼桌宠');
-    this.root.append(this.video); canvas.after(this.root);
+    // The shipped clips are opaque (black backdrop). The matte canvas paints only
+    // the character over the wallpaper, while the video element stays as the
+    // decoding and layout box that no longer shows its own background.
+    this.matte = createVideoMatte(this.video);
+    if (this.matte.active) this.root.className += ' is-matted';
+    this.root.append(this.video, this.matte.canvas); canvas.after(this.root);
     this.effect = document.createElement('div'); this.effect.id = 'video-pet-effect'; this.effect.setAttribute('role','img');
     this.caption = document.createElement('div'); this.caption.id = 'video-pet-caption';
     this.shadow = document.createElement('canvas'); this.shadow.id = 'video-pet-shadow'; this.shadow.hidden = true;
@@ -18,6 +26,15 @@ export class VideoPetRenderer {
     this.effects = createFaceEffects({ effect:this.effect, caption:this.caption, shadow:this.shadow });
     this.video.onended = () => { this.transient = false; this.resumeAmbient(); };
   }
+  /** Drives the matte only while the clip is visible, so a hidden or collapsed pet costs nothing. */
+  pumpFrames() {
+    this.frameHandle = null;
+    if (this.disposed || this.suspended || !this.ready) return;
+    this.matte.frame();
+    this.frameHandle = requestAnimationFrame(() => this.pumpFrames());
+  }
+  startFrames() { if (this.frameHandle == null && !this.disposed && !this.suspended && this.ready) this.frameHandle = requestAnimationFrame(() => this.pumpFrames()); }
+  stopFrames() { if (this.frameHandle != null) { cancelAnimationFrame(this.frameHandle); this.frameHandle = null; } }
   async load() {
     this.base = new URL('assets/local-model/dsh-pet/', location.href);
     const response = await fetch(new URL('catalog.json', this.base)).catch(() => null);
@@ -26,7 +43,9 @@ export class VideoPetRenderer {
     if (!this.entries.has('idle')) throw Error('视频桌宠动作目录不完整。');
     this.canvas.hidden = true;
     await this.play('idle', { loop:true });
-    this.ready = true; this.report({type:'model-ready',runtime:'video',videoElements:1,preload:'none',actions:this.entries.size});
+    this.ready = true; this.startFrames();
+    this.report({type:'model-ready',runtime:'video',videoElements:1,preload:'none',actions:this.entries.size,
+      backdrop:this.matte.active ? 'transparent' : 'opaque', backdropruntime:this.matte.stats.mode});
   }
   clearEffect() {
     clearTimeout(this.effectTimer); this.effects.setDark(false); this.effect.replaceChildren();
@@ -38,7 +57,7 @@ export class VideoPetRenderer {
     this.effect.setAttribute('aria-label', action.label); this.caption.textContent = action.text ?? '';
     this.effectTimer = setTimeout(() => this.clearEffect(), 3000);
   }
-  async play(id, { loop = false, transient = !loop } = {}) {
+  async play(id, { loop = false, transient = !loop, silent = false } = {}) {
     if (this.disposed) return false;
     const action = this.entries.get(id); if (!action) throw Error('未知视频动作');
     this.cancelLoad?.(); this.cancelLoad = null;
@@ -69,6 +88,11 @@ export class VideoPetRenderer {
     this.video.load();
     if (!await loaded || this.disposed || generation !== this.generation) return false;
     if (!this.suspended) await this.video.play();
+    this.matte.reset(); this.startFrames();
+    // Optional hook so a deliberate one-shot action can also carry a locally shipped voice line.
+    // Looping ambient states never speak, and a randomized flourish stays silent so it never
+    // talks over the reply that just ended.
+    if (!silent && !loop) this.onAction?.(id);
     return true;
   }
   request(id, options) { if (!this.entries || this.disposed) return; void this.play(id, options).catch(() => { if (!this.disposed) { this.report({type:'video-error'}); this.caption.textContent = '这个动作暂时无法播放'; } }); }
@@ -106,13 +130,43 @@ export class VideoPetRenderer {
   }
   updateView(_view, state = _view.state, workFocus = false) {
     if (!this.ready || this.disposed) return;
+    // The clips animate their own mouth. Driving that animation with the real output
+    // amplitude is what makes it follow the voice, and it adds no pixels of its own.
+    this.effects.setSpeaking(state === 'speaking' ? _view.mouth : null);
+    const open = this.effects.stats().mouthOpen;
+    const rate = state === 'speaking' ? Math.min(1.6, 0.65 + 0.95 * open) : 1;
+    if (this.video.playbackRate !== rate) this.video.playbackRate = rate;
     const next = state === 'thinking' ? 'thinking' : state === 'listening' ? 'listening' : state === 'error' ? 'error'
       : workFocus && ['working','waiting','thinking'].includes(this.workState) ? this.workState : 'idle';
     this.ambient = next;
     if (!this.transient && this.current !== next) this.request(next, {loop:true});
   }
+  /** Actions the user's own automatic policy enabled, minus the states the pet already holds. */
+  actionPool() {
+    const enabled = this.enabledIds;
+    const pool = new Set();
+    for (const [preset, action] of Object.entries(presetActions)) {
+      if (enabled && !enabled.has(preset)) continue;
+      if (HELD_STATES.has(action) || action === this.lastRandom) continue;
+      if (this.entries.has(action)) pool.add(action);
+    }
+    return [...pool];
+  }
+  /** After a spoken reply ends, one randomized action plays once and then ambient resumes. */
+  afterSpeech() {
+    if (!this.ready || this.disposed) return null;
+    this.effects.setSpeaking(null);
+    this.transient = false; this.ambient = 'idle';
+    const pool = this.actionPool();
+    if (!pool.length) { this.reset(); return null; }
+    const id = pool[Math.floor(Math.random() * pool.length)];
+    this.lastRandom = id;
+    this.request(id, { transient: true, silent: true });
+    this.report({ type: 'auto-action', action: id, pool: pool.length });
+    return id;
+  }
   beginAttention() { this.transient = false; this.ambient = 'listening'; this.request('listening', {loop:true}); }
-  reset() { if (!this.ready) return; this.transient = false; this.ambient = 'idle'; this.request('idle', {loop:true}); }
+  reset() { if (!this.ready) return; this.transient = false; this.ambient = 'idle'; this.effects.setSpeaking(null); this.request('idle', {loop:true}); }
   pat() {
     const now = performance.now(); if (now - this.lastPat < 250 || !this.ready) return;
     if (now - this.lastPat > 8000) this.patCount = 0;
@@ -121,11 +175,16 @@ export class VideoPetRenderer {
   }
   reassure() { this.patCount = 0; this.lastPat = -Infinity; this.request('affectionate'); }
   setFraming(mode) { this.root.dataset.framing = mode; }
-  setSuspended(value) { this.suspended = value; if(value) this.video.pause(); else if(this.ready) void this.video.play().catch(()=>{}); }
-  snapshot() { return {runtime:'video',action:this.current,animation:this.root.dataset.animation,videoElements:1,preload:this.video.preload,paused:this.video.paused,readyState:this.video.readyState,patCount:this.patCount}; }
+  setSuspended(value) {
+    this.suspended = value;
+    if (value) { this.stopFrames(); this.effects.setSpeaking(null); this.video.playbackRate = 1; this.video.pause(); }
+    else if (this.ready) { void this.video.play().catch(()=>{}); this.startFrames(); }
+  }
+  snapshot() { return {runtime:'video',action:this.current,animation:this.root.dataset.animation,videoElements:1,preload:this.video.preload,paused:this.video.paused,readyState:this.video.readyState,patCount:this.patCount,backdrop:this.matte.active ? 'transparent' : 'opaque',backdropruntime:this.matte.stats.mode,matteFrames:this.matte.stats.frames,mouthOpen:Number(this.effects.stats().mouthOpen.toFixed(3)),playbackRate:this.video.playbackRate}; }
   dispose() {
-    this.disposed = true; this.ready = false; ++this.generation; this.cancelLoad?.(); this.clearEffect(); this.effects.dispose();
+    this.disposed = true; this.ready = false; ++this.generation; this.cancelLoad?.(); this.stopFrames(); this.clearEffect(); this.effects.dispose();
     this.video.pause(); this.video.removeAttribute('src'); this.video.load();
+    this.matte.dispose();
     this.root.remove(); this.effect.remove(); this.caption.remove(); this.shadow.remove(); this.canvas.hidden = false;
   }
 }

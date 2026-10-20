@@ -6,7 +6,7 @@ import { SqliteMemoryImportManagement } from '../memory/import-management.js';
 import { HistoricalMemoryTransport, historicalMemoryInputBytes, memoryImportConfiguration, observedImportEndpoint } from './memory-import.js';
 import { WakeManager } from './wake-manager.js';
 import { wechatTranscriber } from '../wechat/asr.js';
-import { wechatAudioFileSender } from '../wechat/output.js';
+import { wechatVoiceReplySender } from '../wechat/output.js';
 import { WeChatService } from '../wechat/service.js';
 import { WeChatApi } from '../wechat/api.js';
 import { WeChatStore } from '../wechat/store.js';
@@ -54,6 +54,8 @@ import { MiniMaxTtsProvider, MINIMAX_TTS_MODEL, MINIMAX_TTS_ENDPOINT } from '../
 import { RegisteredVoiceStore } from '../providers/registered-voices.js';
 import { ProviderTransport, type EndpointConfig, type JsonRecord, type ProviderOperation } from '../providers/transport.js';
 import { BackendSession, type BackendPorts } from './backend-session.js';
+import { createBackendOutput } from './backend-output.js';
+import { BackendStartupError, formatBackendStartupFailure, type BackendStartupStage } from './backend-startup-diagnostics.js';
 import { TrialAuthorizer } from './trial-authorizer.js';
 import { readActiveTrialConfiguration, type TrialConfiguration, type TrialOperation } from './trial-config.js';
 import { verifyTrialRuntime } from './trial-launcher.js';
@@ -69,7 +71,7 @@ export class TrialTransport extends ProviderTransport {
   constructor(private readonly configuration: TrialConfiguration, private readonly providerFetch: typeof fetch = fetch,
     private readonly runtime?: ManagementRuntime, private readonly dialogueTemperature?: number) { super(providerFetch); }
   override async request(config: EndpointConfig, scope: TurnScope, operation: ProviderOperation, body: JsonRecord,
-    signal: AbortSignal, textCharacters?: number, audioSeconds?: number): Promise<JsonRecord> {
+    signal: AbortSignal, textCharacters?: number, audioSeconds?: number, onContent?: (content:string) => void): Promise<JsonRecord> {
     const model = this.configuration.models[operation as TrialOperation];
     if (!model || operation === 'memory_maintenance') throw new Error('Unregistered trial operation');
     if (operation !== 'dialogue' && operation !== 'tts' && operation !== 'perception' && operation !== 'asr') {
@@ -88,11 +90,18 @@ export class TrialTransport extends ProviderTransport {
         throw new Error('Visual request must contain only current images and the fixed visual prompt');
     }
     if (operation === 'asr') {
-      const messages=body.messages as {role?:string;content?:{type?:string;input_audio?:{data?:string}}[]}[]|undefined;
+      const native=model.model==='qwen-audio-3.0-asr-flash';
+      const input=body.input as {messages?:{role?:string;content?:{type?:string;input_audio?:{data?:string}}[]}[]} | undefined;
+      const messages=(native?input?.messages:body.messages) as {role?:string;content?:{type?:string;input_audio?:{data?:string}}[]}[]|undefined;
       const content=messages?.[0]?.content,data=content?.[0]?.input_audio?.data;
-      if (messages?.length!==1 || messages[0]?.role!=='user' || content?.length!==1 || content[0]?.type!=='input_audio' || typeof data!=='string' || !data.startsWith('data:audio/wav;base64,')) throw new Error('ASR audio request is invalid');
+      if (messages?.length!==1 || messages[0]?.role!=='user' || content?.length!==1 || content[0]?.type!=='input_audio' || typeof data!=='string' || !data.startsWith('data:audio/wav;base64,')
+        || native && Object.keys(body).some(key=>!['input','parameters'].includes(key))) throw new Error('ASR audio request is invalid');
       const bytes=Buffer.from(data.slice('data:audio/wav;base64,'.length),'base64');
-      try { const actualSeconds=inspectPcmWav(bytes).durationMs/1000; if(typeof audioSeconds!=='number'||!Number.isFinite(audioSeconds)||Math.abs(actualSeconds-audioSeconds)>0.000001)throw new Error('ASR audio duration mismatch'); } finally {bytes.fill(0);}
+      try {
+        const wav=inspectPcmWav(bytes),actualSeconds=wav.durationMs/1000;
+        if(typeof audioSeconds!=='number'||!Number.isFinite(audioSeconds)||Math.abs(actualSeconds-audioSeconds)>0.000001)throw new Error('ASR audio duration mismatch');
+        if(native && JSON.stringify(body.parameters)!==JSON.stringify({format:'wav',sample_rate:String(wav.sampleRate)}))throw new Error('ASR audio sample rate mismatch');
+      } finally {bytes.fill(0);}
     }
     if (operation === 'tts') {
       const input = body.input as Record<string, unknown> | undefined;
@@ -122,7 +131,7 @@ export class TrialTransport extends ProviderTransport {
     if(operation==='dialogue'&&countRequestInput({...requestBody,model:config.model})>inputBudgetInfo(model).effectiveInputTokens)throw Error('required_context_exceeds_budget');
     const call = (sent: () => void = () => {}) => new ProviderTransport((...args) => {
       sent(); return this.providerFetch(...args);
-    }).request(config, scope, operation, requestBody, boundedSignal, textCharacters, audioSeconds);
+    }).request(config, scope, operation, requestBody, boundedSignal, textCharacters, audioSeconds, onContent);
     return this.runtime ? this.runtime.observeCall(operation as TrialOperation, scope.characterId, call, boundedSignal) : call();
   }
 }
@@ -210,14 +219,23 @@ export function keyReader(filename: string, configuration: TrialConfiguration, c
 }
 
 export async function startTrialBackend(environment: NodeJS.ProcessEnv = process.env): Promise<void> {
+  let stage: BackendStartupStage = 'configuration';
+  try { await initializeTrialBackend(environment, next => { stage = next; }); }
+  catch (error) { throw new BackendStartupError(stage, error); }
+}
+
+async function initializeTrialBackend(environment: NodeJS.ProcessEnv, stage: (value: BackendStartupStage) => void): Promise<void> {
   const configFile = environment.PET_TRIAL_CONFIG, activationFile = environment.PET_TRIAL_ACTIVATION;
   if (!configFile || !activationFile || !isAbsolute(configFile) || !isAbsolute(activationFile)) throw new Error('Explicit trial configuration required');
   const registeredConfiguration = await readActiveTrialConfiguration(configFile, activationFile);
   if (registeredConfiguration.purpose === 'user-trial') assertCompanionDataConfiguration(registeredConfiguration);
+  stage('runtime');
   await verifyTrialRuntime(registeredConfiguration);
+  stage('settings');
   const voices = await RegisteredVoiceStore.open(resolve(registeredConfiguration.projectRoot, '.local/data/registered-voices.json'));
   const settings = await ManagementSettingsStore.open(resolve(dirname(configFile), 'management-settings.json'), registeredConfiguration, voices);
   const configuration = effectiveTrialConfiguration(registeredConfiguration, settings.effective);
+  stage('storage');
   const evidenceRoot = resolve(configuration.projectRoot, '.local/model-evaluation/trial');
   await mkdir(evidenceRoot, { recursive: true });
   const runtime = new ManagementRuntime(configuration.sourceRevision, async diagnostic => {
@@ -234,8 +252,13 @@ export async function startTrialBackend(environment: NodeJS.ProcessEnv = process
   let desktopWork: import('../contracts/desktop-work.js').DesktopWorkPort | undefined;
   let desktopWorkbench: DesktopWorkbench | undefined;
   let management: Awaited<ReturnType<typeof startRuntimeManagement>> | undefined;
+  let closeBackend: (() => Promise<void>) | undefined;
+  const output = createBackendOutput(process.stdout, () => {
+    void closeBackend?.().catch(() => { process.stderr.write('Local backend cleanup did not complete\n'); });
+  });
   const release = async () => { await lock.close(); await unlink(lockPath); };
   try {
+    stage('services');
     const authorizer = new TrialAuthorizer(configuration, configFile, activationFile, registeredConfiguration);
     const transport = new TrialTransport(configuration, fetch, runtime, settings.effective.providers.dialogue.temperature);
     const endpoint = (operation: TrialOperation): EndpointConfig => {
@@ -281,7 +304,7 @@ export async function startTrialBackend(environment: NodeJS.ProcessEnv = process
       }
     }
     const presentation = await PresentationSettingsStore.open(resolve(configuration.projectRoot, '.local/data/presentation-settings.json'),
-      await readPresentationCatalog(configuration.projectRoot), policy => process.stdout.write(JSON.stringify({ channel: 'presentation_policy', policy }) + '\n'));
+      await readPresentationCatalog(configuration.projectRoot), policy => output.send({ channel: 'presentation_policy', policy }));
     const dialogue=new JsonDialogueProvider(endpoint('dialogue'),transport,()=>presentation.allowedIntent(),undefined,{outputTokenLimit:configuration.models.dialogue.outputTokenLimit,...(settings.effective.providers.dialogue.temperature===undefined?{}:{temperature:settings.effective.providers.dialogue.temperature})});
     const foregroundBudget=inputBudgetInfo(configuration.models.dialogue,settings.effective.context.targetInputTokens);
     const strictProvider=new StrictTrialMemoryProvider(store, endpoint('memory_turn'), transport, configuration.phaseId, evidence, configuration.models.memory_turn.thinking);
@@ -320,13 +343,13 @@ export async function startTrialBackend(environment: NodeJS.ProcessEnv = process
     session = new BackendSession(sessionPorts, message => {
       runtime.observeDesktop(message);
       if (message.channel === 'event' && message.event.type === 'error' && configuration.purpose === 'smoke-text') void authorizer.stop('backend_error').catch(() => {});
-      process.stdout.write(JSON.stringify(message) + '\n');
+      output.send(message);
     }, () => store!.close(), (scope, kind) => {
       runtime.record(kind === 'summary' ? 'summary' : 'memory_turn', 'failed', scope.characterId, '后台维护未完成；未记录对话正文。');
       if (configuration.purpose === 'smoke-text') void authorizer.stop(`${kind}_failure`).catch(() => {});
       void diagnostic({ type: 'background_failure', scope, kind }).catch(() => {});
     });
-    process.stdout.write(JSON.stringify({ channel: 'presentation_policy', policy: presentation.snapshot() }) + '\n');
+    output.send({ channel: 'presentation_policy', policy: presentation.snapshot() });
     runtime.observeMemoryQueue(() => session!.pendingMemoryJobs());
     if (configuration.purpose === 'user-trial') {
       try {
@@ -342,14 +365,14 @@ export async function startTrialBackend(environment: NodeJS.ProcessEnv = process
             classifier:new WorkIntentClassifier(endpoint('admission'),transport),planner:new WorkPlanner(endpoint('admission'),transport)});
           try{return await conversation.start();}catch(error){await conversation.close();throw error;}
         },{transcribe:wechatTranscriber(voiceMedia,new QwenAsrProvider(endpoint('asr'),voiceMedia,transport)),
-          sendVoice:wechatAudioFileSender(replyMedia,replyTts,channelApi)});
+          sendVoice:wechatVoiceReplySender(replyMedia,replyTts,channelApi)});
       } catch { process.stderr.write('WeChat channel storage unavailable; companion data unchanged.\n'); }
       const wakeModels=resolve(configuration.projectRoot,'.local/data/wake-models');
       let wakeAvailable=false;
       try { const {verifyWakeModels}=await import('../media/wake/models.js');await verifyWakeModels(wakeModels);wakeAvailable=true; } catch { /* Off until a verified model package is installed. */ }
       try { wake=await WakeManager.open({instanceId:runtime.instanceId,file:resolve(configuration.projectRoot,'.local/data/wake-settings.json'),available:wakeAvailable,
         createDetector:async settings=>{const {openWakeDetector}=await import('../media/wake/detector.js');return openWakeDetector({modelDirectory:wakeModels,settings});},
-        send:message=>process.stdout.write(JSON.stringify(message)+'\n')});
+        send:message=>output.send(message)});
       } catch { process.stderr.write('Local wake settings unavailable; existing settings preserved.\n'); }
       managementForget=new StrictManagementForget(store,store.lifecycle,{inputTokenBudget:configuration.models.memory_turn.inputTokenLimit,
         countTokens:input=>buildMemorySemanticFormat(input,true).inputUpperBound+1024},
@@ -388,7 +411,7 @@ export async function startTrialBackend(environment: NodeJS.ProcessEnv = process
     if (configuration.purpose === 'user-trial') {
       if (management?.workbench && management.projects) {
         desktopWorkbench = new DesktopWorkbench(management.projects, management.workbench,
-          state => process.stdout.write(JSON.stringify({ channel: 'workbench_state', state }) + '\n'),
+          state => output.send({ channel: 'workbench_state', state }),
           notice => session!.notifyWork(notice),
           projectId => readDesktopCoordinatorProfile(configuration.projectRoot, projectId));
         session.attachWorkbench(desktopWorkbench);
@@ -403,13 +426,13 @@ export async function startTrialBackend(environment: NodeJS.ProcessEnv = process
             workbenchRoute: desktopWorkbench.routeInput.bind(desktopWorkbench),
             workbenchBeginInput: desktopWorkbench.beginInput.bind(desktopWorkbench),
             workbenchContinuation: desktopWorkbench.continueInput.bind(desktopWorkbench) } : {}),
-          emit: state => process.stdout.write(JSON.stringify({ channel: 'work_state', state }) + '\n'), notify: notice => session!.notifyWork(notice) });
+          emit: state => output.send({ channel: 'work_state', state }), notify: notice => session!.notifyWork(notice) });
         desktopWork = work; session.attachWork(work); await work.start();
       } else {
         // Failed independent storage must not stop unrelated companion chat or leak engineering input into it.
         let sequence = 0;
-        const unavailable = () => process.stdout.write(JSON.stringify({ channel: 'work_state', state: { sequence: ++sequence,
-          focus: 'work', stage: 'failed', requests: [], detail: '工作记录暂不可用；这次任务没有保存或发送，陪伴聊天仍可继续。' } }) + '\n');
+        const unavailable = () => output.send({ channel: 'work_state', state: { sequence: ++sequence,
+          focus: 'work', stage: 'failed', requests: [], detail: '工作记录暂不可用；这次任务没有保存或发送，陪伴聊天仍可继续。' } });
         desktopWork = { onInput() {}, async route(scope, text, signal) {
           const intent = await classifier.classify(scope, text, signal);
           if (intent.kind === 'companion') return 'companion'; unavailable(); return 'handled';
@@ -423,7 +446,7 @@ export async function startTrialBackend(environment: NodeJS.ProcessEnv = process
     const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
     let stopping = false;
     const close = async () => {
-      if (stopping) return; stopping = true; clearInterval(cleanupTimer); lines.close(); process.stdin.pause();
+      if (stopping) return; stopping = true; output.close(); clearInterval(cleanupTimer); lines.close(); process.stdin.pause();
       managementForget?.close();
       try { await wake?.close(); await wechat?.close(); await desktopWork?.close(); await desktopWorkbench?.close(); await management?.close(); await managementForget?.drain(); await settings.drain(); await presentation.drain(); }
       finally { try { await session!.close(); } finally { await release(); } }
@@ -444,7 +467,10 @@ export async function startTrialBackend(environment: NodeJS.ProcessEnv = process
     });
     lines.on('close', () => { void close(); });
     process.once('SIGTERM', () => { void close(); }); process.once('SIGINT', () => { void close(); });
+    closeBackend = close;
+    if (!output.open) await close();
   } catch (error) {
+    output.close();
     managementForget?.close();
     await wake?.close(); await wechat?.close(); await desktopWorkbench?.close(); await management?.close(); await managementForget?.drain();
     await memoryImport?.close();
@@ -454,5 +480,8 @@ export async function startTrialBackend(environment: NodeJS.ProcessEnv = process
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  startTrialBackend().catch(() => { process.stderr.write('试用后端未启动，请检查已登记的配置与程序版本。\n'); process.exitCode = 1; });
+  startTrialBackend().catch(error => {
+    process.stderr.write('试用后端未启动，请检查以下安全诊断。\n' + formatBackendStartupFailure(error));
+    process.exitCode = 1;
+  });
 }

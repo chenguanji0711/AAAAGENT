@@ -65,9 +65,14 @@ export function readCompanionChatHistory(filename: string, characterId: Characte
         if (row.message_role === 'assistant') {
           let sources: unknown;
           try { sources = JSON.parse(row.sources_json!); } catch { return unavailableCompanionChatHistory(characterId); }
-          if (!Array.isArray(sources) || sources.length !== 1) continue;
-          const source = sources[0] as { id?: unknown; version?: unknown } | null;
-          if (!source || !identifier(source.id)) continue;
+          if (!Array.isArray(sources) || !sources.length || sources.some(source => !source ||
+            !identifier(source.id) || !Number.isSafeInteger(source.version) || source.version < 1)) continue;
+          // Current replies retain every context dependency. Bind display to this reply's own user,
+          // rather than treating its additional historical dependencies as an invalid pair.
+          const ownUserId = row.id.endsWith(':assistant') ? row.id.slice(0, -':assistant'.length) + ':user' : null;
+          const matching = ownUserId ? sources.filter(source => source.id === ownUserId) : sources;
+          if (matching.length !== 1 || (!ownUserId && sources.length !== 1)) continue;
+          const source = matching[0] as { id: string; version: number };
           user = users.get(source.id);
           if (!user || source.version !== user.version) continue;
         }

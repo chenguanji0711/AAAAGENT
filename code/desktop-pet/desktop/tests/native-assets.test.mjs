@@ -25,7 +25,7 @@ test('Swift desktop host compiles with the streaming asset handler without launc
   const prefix=join(tmpdir(),'aaaagent-native-compile-'),temporary=await mkdtemp(prefix);
   try {
     const source=name=>fileURLToPath(new URL('../native/'+name,import.meta.url));
-    const result=spawnSync('swiftc',['-framework','AppKit','-framework','WebKit',source('asset-response.swift'),source('display-layout.swift'),source('main.swift'),'-o',join(temporary,'DesktopPet')],{encoding:'utf8',timeout:60000});
+    const result=spawnSync('swiftc',['-framework','AppKit','-framework','WebKit',source('asset-response.swift'),source('display-layout.swift'),source('motion-preferences.swift'),source('main.swift'),'-o',join(temporary,'DesktopPet')],{encoding:'utf8',timeout:60000});
     assert.equal(result.status,0,result.stderr);
   } finally {
     assert.ok(resolve(temporary).startsWith(resolve(prefix)));

@@ -62,3 +62,11 @@ id_ed25519*
 !/t3-source/apps/web/src/assets/notification-input.mp3
 !/t3-source/apps/web/src/assets/snap-shot-click.mp3
 !/t3-source/apps/web/src/assets/snap-shot-whoosh.mp3
+
+# Local collaboration and user data are never part of this source publication.
+/tasks/
+/ai-collaboration/
+/PROJECT_STATUS.md
+/AGENTS.md
+*.mov
+*.heic

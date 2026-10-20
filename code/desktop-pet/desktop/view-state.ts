@@ -40,7 +40,7 @@ export class DesktopViewState {
     return false;
   }
   receive(event: DesktopEvent): boolean {
-    if (event.type === 'transcript') return this.accepts(event.scope);
+    if (event.type === 'transcript' || event.type === 'reply_progress') return this.accepts(event.scope);
     if (event.type === 'turn') {
       const s = event.input.scope;
       if (this.sessionId && s.sessionId !== this.sessionId || s.characterId !== this.characterId || s.generation <= (this.floors.get(s.sessionId) ?? -1)) return false;

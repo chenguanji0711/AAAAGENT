@@ -1,11 +1,26 @@
 // Local face rendering over the original transparent video. No new character pixels.
+//
+// The clips already animate the mouth themselves — the speaking clip mutters at the
+// screen, and its mouth band moves an order of magnitude more than the rest of the frame.
+// Painting a second mouth on top of that read as a pasted dot, so the speaking signal is
+// used where it actually helps: the renderer scales the clip's own playback speed with the
+// live output amplitude, and this module only tracks how open the voice is.
+const MOUTH_CURVE = 2.2; // matches the Live2D sqrt curve so both renderers agree
+
+/** object-fit: contain insets the drawn frame inside the element box. */
+export function frameBox(rect, width = 640, height = 360) {
+  const scale = Math.min(rect.width / width, rect.height / height);
+  return { scale, left: rect.left + (rect.width - width * scale) / 2, top: rect.top + (rect.height - height * scale) / 2 };
+}
+
 export function createFaceEffects({effect,caption,shadow}) {
   const sample=document.createElement('canvas');sample.width=640;sample.height=360;
   const input=sample.getContext('2d',{willReadFrequently:true});
   const matte=document.createElement('canvas');matte.width=640;matte.height=360;
   const matteContext=matte.getContext('2d');
   let dark=false,raf=0,lastFrame=-1,lastVideo=null,face=null,lastUpdate=0;
-  const telemetry={enabled:false,faceBox:null,shadedPixels:0,maxAlpha:0,lowerFaceAlpha:0,shadowStyle:'soft-upper-face-gradient',frameCount:0,sampleTime:0,anchor:null,iconSize:null};
+  let open=0;
+  const telemetry={enabled:false,faceBox:null,shadedPixels:0,maxAlpha:0,lowerFaceAlpha:0,shadowStyle:'soft-upper-face-gradient',frameCount:0,sampleTime:0,anchor:null,iconSize:null,mouthOpen:0};
   const warmSkin=(r,g,b,a)=>a>180&&r>165&&g>100&&b>80&&r-g>8&&r-g<90&&g-b>2&&g-b<60;
   function inspect(video){
     input.clearRect(0,0,640,360);input.drawImage(video,0,0,640,360);
@@ -57,10 +72,10 @@ export function createFaceEffects({effect,caption,shadow}) {
   }
   function position(video,b){
     const rect=video.getBoundingClientRect(),right=document.querySelector('.dsh-pet-root')?.dataset.facing==='right';
-    const sx=rect.width/640,sy=rect.height/360;
-    const faceLeft=rect.left+(right?640-b.x1:b.x0)*sx;
-    const faceRight=rect.left+(right?640-b.x0:b.x1)*sx;
-    const faceTop=rect.top+b.y0*sy;
+    const box=frameBox(rect);
+    const faceLeft=box.left+(right?640-b.x1:b.x0)*box.scale;
+    const faceRight=box.left+(right?640-b.x0:b.x1)*box.scale;
+    const faceTop=box.top+b.y0*box.scale;
     const faceWidth=faceRight-faceLeft;
     const icon=effect.dataset.icon;
     const base=Math.max(62,Math.min(86,faceWidth*.83));
@@ -90,5 +105,18 @@ export function createFaceEffects({effect,caption,shadow}) {
     raf=requestAnimationFrame(tick);
   }
   raf=requestAnimationFrame(tick);
-  return {setDark(value){dark=value;telemetry.enabled=value;if(!value){shadow.hidden=true;telemetry.shadedPixels=0;telemetry.maxAlpha=0;telemetry.lowerFaceAlpha=0;}},place(){const video=document.querySelector('.dsh-pet-video.is-front');if(video&&face)position(video,face);},stats(){return structuredClone(telemetry);},dispose(){cancelAnimationFrame(raf);}};
+  return {
+    setDark(value){dark=value;telemetry.enabled=value;if(!value){shadow.hidden=true;telemetry.shadedPixels=0;telemetry.maxAlpha=0;telemetry.lowerFaceAlpha=0;}},
+    /** `value` is the live output amplitude, or null when nothing is being spoken. */
+    setSpeaking(value){
+      if(value===null||value===undefined||!Number.isFinite(value)||value<=0){open=open*(1-0.25);telemetry.mouthOpen=open;return;}
+      const target=Math.min(1,Math.sqrt(Math.min(1,value))*MOUTH_CURVE);
+      // Fast attack, slow release: the mouth follows the syllable and eases shut.
+      open=open+(target-open)*(target>open?0.55:0.18);
+      telemetry.mouthOpen=open;
+    },
+    place(){const video=document.querySelector('.dsh-pet-video.is-front');if(video&&face)position(video,face);},
+    stats(){return structuredClone(telemetry);},
+    dispose(){cancelAnimationFrame(raf);}
+  };
 }

@@ -1,3 +1,6 @@
+> **macOS 桌宠交付分支 · 2026-10-20**
+> 本分支在上游 AAAAGENT 基础上加入常驻聊天栏、独立隐藏/恢复、流式文本、自然动作与口型接线、模型校验、启动脱敏诊断和稳定桌面定位。请先阅读[本次交付与构建说明](docs/MACOS-DELIVERY-20261020.md)。保留上游非商业署名许可；模型、Cubism SDK、生成语音、私人数据和预构建安装包均不随源码分发。
+
 ## Mac / Windows 开发版更新 · 2026-10-11
 
 Mac 与 Windows **0.3.0-dev.1** 以 10 月 10 日交接包为共同功能基线，包含新版 T3 Code / Flow 工作台、Codex / DeepSeek Harness 连接和新桌宠。Mac 源码位于根目录，使用 Swift / WebKit；Windows 源码位于 `windows/`，使用 Electron。本地 ASR、TTS 和 Ollama 对话扩展目前仅在 Windows 提供。

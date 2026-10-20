@@ -1,0 +1,15 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8">
+<!-- Local visual check of the shipped drawer footer only. Lives under tests/ so the
+     runtime fingerprint never registers it. The panel is placed where the pet window
+     currently is on screen (see the screenshot crop) because the WKWebView viewport is
+     always the full screen and the window only shows a slice of the page. -->
+<link rel="stylesheet" href="../style.css">
+</head><body>
+<section id="drawer" style="position:absolute;left:1502px;top:396px;width:372px;height:210px;margin:0">
+ <header><div class="panel-title"><span class="presence-dot" aria-hidden="true"></span><strong>青梅竹马</strong></div><button id="management" type="button">控制台</button><button id="close" aria-label="收起对话">×</button></header>
+ <div id="hotkey-settings"><span>输入框外按住发言 · <b id="hotkey-value">未绑定</b></span><button id="hotkey-bind" type="button">设置按键</button><button id="hotkey-clear" type="button">清除</button></div>
+ <div id="audio-settings" role="group" aria-label="声音"><button id="audio-toggle" type="button" aria-pressed="false" title="静音">🔊</button><input id="audio-volume" type="range" min="0" max="100" step="5" value="70" aria-label="音量"><span id="audio-note">静音时台词与语音回复都不出声</span></div>
+ <div id="audio-settings" role="group" aria-label="声音-已静音"><button id="audio-toggle2" type="button" aria-pressed="true" title="取消静音">🔇</button><input id="audio-volume2" type="range" min="0" max="100" step="5" value="0" aria-label="音量"><span id="audio-note">静音时台词与语音回复都不出声</span></div>
+ <footer><button id="voice">开始语音</button><span id="hint">语音使用麦克风与摄像头</span><button id="quit" aria-label="退出桌宠">退出</button></footer>
+</section>
+</body></html>

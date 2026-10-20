@@ -5,6 +5,7 @@ import { isOmniEmotion, type OmniEmotion } from './omni-seven-emotion.js';
 import { object, ProviderTransport, type EndpointConfig, type JsonRecord } from './transport.js';
 
 export const QWEN_ASR_MODEL = 'qwen3-asr-flash-2026-02-10';
+export const QWEN_AUDIO_ASR_MODEL = 'qwen-audio-3.0-asr-flash';
 const mapped: Record<OmniEmotion, PerceivedEmotion> = {
   neutral: 'neutral', happy: 'happy', sad: 'sad', angry: 'angry', fearful: 'fear', disgusted: 'disgust', surprised: 'surprise',
 };
@@ -29,7 +30,7 @@ export class QwenAsrProvider implements AsrProvider {
   constructor(config: EndpointConfig, private readonly store: MediaStorePort,
     private readonly transport: Pick<ProviderTransport, 'request'> = new ProviderTransport()) {
     this.config = Object.freeze({ ...config });
-    if (config.model !== QWEN_ASR_MODEL) throw Error('Explicit reviewed Qwen ASR snapshot required');
+    if (config.model !== QWEN_ASR_MODEL && config.model !== QWEN_AUDIO_ASR_MODEL) throw Error('Explicit reviewed Qwen ASR snapshot required');
   }
   async transcribe(input: AsrInput, signal: AbortSignal): Promise<AsrResult> {
     checkAbort(signal);
@@ -38,15 +39,22 @@ export class QwenAsrProvider implements AsrProvider {
     const bytes = await this.store.read(scope, audio);
     let body: JsonRecord, audioSeconds: number;
     try {
-      checkAbort(signal); audioSeconds = inspectPcmWav(bytes).durationMs / 1000;
+      checkAbort(signal); const wav = inspectPcmWav(bytes); audioSeconds = wav.durationMs / 1000;
       const encoded = Buffer.from(bytes).toString('base64');
       if (encoded.length >= 10 * 1024 * 1024) throw Error('ASR inline media limit exceeded');
       // No system role, context, language override or translation instruction; retain mixed speech and number words.
-      body = { messages: [{ role: 'user', content: [{ type: 'input_audio', input_audio: { data: 'data:audio/wav;base64,' + encoded } }] }],
-        stream: false, asr_options: { enable_itn: false } };
+      const messages = [{ role: 'user', content: [{ type: 'input_audio', input_audio: { data: 'data:audio/wav;base64,' + encoded } }] }];
+      body = this.config.model === QWEN_AUDIO_ASR_MODEL
+        ? { input: { messages }, parameters: { format: 'wav', sample_rate: String(wav.sampleRate) } }
+        : { messages, stream: false, asr_options: { enable_itn: false } };
     } finally { bytes.fill(0); }
     const raw = await abortable(this.transport.request(this.config, scope, 'asr', body, signal, undefined, audioSeconds), signal);
     checkAbort(signal);
+    if (this.config.model === QWEN_AUDIO_ASR_MODEL) {
+      const output = object(raw.output);
+      if (typeof output.text !== 'string') throw Error('Invalid ASR transcript');
+      return { scope, transcript: output.text };
+    }
     return { scope, ...parseAsrResponse(raw) };
   }
 }

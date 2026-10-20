@@ -34,6 +34,18 @@ test('official transcript bypass, failed audio isolation, durable policy and sna
  const fresh=new WeChatStore(file),again=new WeChatService(fresh,new WeChatApi(),async()=>{throw Error('No new connection');});assert.equal(again.snapshot().replyMode,'text');assert.deepEqual(fresh.get('credentials'),auth);await again.close();
 });
 
+test('voice mode still delivers the readable reply when the attachment is dropped',async t=>{
+ const store=new WeChatStore(join(root(t),'channel.sqlite'));store.set('credentials',auth);store.set('enabled',true);store.set('replyMode','voice');
+ let polls=0;const order:string[]=[],sent:string[]=[];
+ const api=new WeChatApi((async(u,o)=>{if(String(u).endsWith('/sendmessage')){sent.push(JSON.parse(String(o!.body)).msg.item_list[0].text_item.text);order.push('text');return json({ret:0});}if(polls++===0)return json({msgs:[message('voice',[{type:1,text_item:{text:'问一句'}}])],get_updates_buf:'cursor'});return blocked(o!.signal!);}) as typeof fetch);
+ const service=new WeChatService(store,api,async(_k,out)=>({capture:()=>undefined,close:async()=>{},receive:async i=>{await out('这是语音模式的回复',i.messageId,i.replyContext);}}),{sendVoice:async()=>{order.push('voice');throw Error('attachment dropped');}});
+ await service.restore();await until(()=>polls===2);
+ assert.deepEqual(order,['text','voice'],'the readable reply is delivered before the audio attachment');
+ assert.deepEqual(sent,['这是语音模式的回复']);
+ assert.equal(service.snapshot().lastDelivery,'unknown','an unconfirmed attachment is reported, never hidden');
+ await service.close();
+});
+
 test('ASR owns a separate scope/store, preserves raw text, rejects wrong scope and releases on cancellation',async()=>{
  const media=new MemoryMediaStore();let bytes=pcm16Wav(new Float32Array(480),24000);
  const transcribe=wechatTranscriber(media,{async transcribe(i){const copy=await media.read(i.scope,i.audio);assert.ok(copy.length>44);copy.fill(0);return {scope:i.scope,transcript:'  seven 七点  '};}},async()=>bytes);

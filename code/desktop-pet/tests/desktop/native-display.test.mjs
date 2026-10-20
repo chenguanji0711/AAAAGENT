@@ -31,6 +31,7 @@ if action == "save" {
    precondition(screen.insetBy(dx:-0.001,dy:-0.001).contains(l.frame))
    precondition(abs(l.modelHeight/l.modelWidth-340.0/360.0)<0.000001)
    precondition(l.petFrame.height<=screen.height+0.001)
+   precondition(l.modelFrame.midX>=screen.minX && l.modelFrame.midX<=screen.maxX,"transparent overhang must not move the model centre off screen")
    precondition(!open || screen.insetBy(dx:-0.001,dy:-0.001).contains(l.drawerFrame))
   }}
  }

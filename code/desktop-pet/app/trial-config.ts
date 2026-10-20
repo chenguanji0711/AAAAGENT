@@ -195,7 +195,9 @@ export function validateTrialConfiguration(value: unknown): TrialConfiguration {
     if (typeof m.model !== 'string' || !m.model.trim() || !positive(m.reservationMicros) || (!unlimited&&m.reservationMicros > (c.purpose === 'user-trial' ? c.limitMicros! : c.phaseLimitMicros))) fail('实际模型或调用预留未配置。');
     if (typeof m.credentialFile !== 'string' || !isAbsolute(m.credentialFile) || within(c.projectRoot, m.credentialFile)) fail('凭据须使用项目外的受限文件。');
     const expected = m.provider === 'deepseek' ? 'https://api.deepseek.com/chat/completions'
-      : m.provider === 'dashscope' ? operation === 'tts' ? isQwenAudioTtsModel(m.model)
+      : m.provider === 'dashscope' ? operation === 'asr' && m.model === 'qwen-audio-3.0-asr-flash'
+        ? 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation'
+        : operation === 'tts' ? isQwenAudioTtsModel(m.model)
         ? 'https://dashscope.aliyuncs.com/api/v1/services/audio/tts/SpeechSynthesizer'
         : 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation'
         : 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions' : null;
@@ -207,7 +209,7 @@ export function validateTrialConfiguration(value: unknown): TrialConfiguration {
         || m.inputTokenLimit > (operation === 'dialogue' ? 1048576 : 32768) || m.outputTokenLimit > 393216
         || m.contextWindowTokens !== undefined && m.contextWindowTokens !== 1048576)) fail('DeepSeek文本需要当前登记的Flash型号和保守计费边界。');
     if (![m.inputMicrosPerToken, m.outputMicrosPerToken].every(n => typeof n === 'number' && Number.isFinite(n) && n >= 0)) fail('模型计费口径未配置。');
-    if (operation === 'asr' && (m.model !== 'qwen3-asr-flash-2026-02-10' || m.audioMicrosPerSecond !== 220 || m.inputMicrosPerToken !== 0 || m.outputMicrosPerToken !== 0)) fail('语音转写型号与音频时长费率未登记。');
+    if (operation === 'asr' && (!['qwen3-asr-flash-2026-02-10', 'qwen-audio-3.0-asr-flash'].includes(m.model) || m.audioMicrosPerSecond !== 220 || m.inputMicrosPerToken !== 0 || m.outputMicrosPerToken !== 0)) fail('语音转写型号与音频时长费率未登记。');
     if (operation !== 'tts' && operation !== 'asr') {
       if (!positive(m.inputTokenLimit) || !positive(m.outputTokenLimit)) fail('模型输入输出硬上限未登记。');
       const maximum = operation==='dialogue' ? dialogueReservation(m) : Math.ceil(m.inputTokenLimit * m.inputMicrosPerToken + m.outputTokenLimit * m.outputMicrosPerToken);

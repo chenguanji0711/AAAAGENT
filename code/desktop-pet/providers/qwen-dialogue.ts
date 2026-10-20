@@ -11,6 +11,7 @@ import { MEMORY_MAINTENANCE_PROMPT } from './memory-prompt.js';
 import { PRESENTATION_PRESET_IDS } from '../contracts/presentation.js';
 
 import { normalizeSpokenText } from './spoken-text.js';
+import { partialDialogueText } from './dialogue-stream.js';
 
 
 function expression(raw: unknown): ExpressionIntent {
@@ -41,7 +42,7 @@ export class JsonDialogueProvider implements DialogueProvider {
     const built=buildDialogueRequest({...frozen.input,context},this.config,frozen.frame,this.requestOptions);
     return countRequestInput({...built.body,model:this.config.model});
   }
-  async reply(original: DialogueRequest, signal: AbortSignal): Promise<DialogueReply> {
+  async reply(original: DialogueRequest, signal: AbortSignal, onText?: (text: string) => void): Promise<DialogueReply> {
     checkAbort(signal);
     const input = structuredClone(original);
     assertScope(input.scope, input.context.scope);
@@ -55,9 +56,15 @@ export class JsonDialogueProvider implements DialogueProvider {
     const built=buildDialogueRequest(input,this.config,this.frame(input.scope,input.text).frame,this.requestOptions);
     if(countRequestInput({...built.body,model:this.config.model})>input.context.inputTokenBudget)throw Error('required_context_exceeds_budget');
     const {forgetting}=built;
-    const raw = await this.transport.request(this.config, input.scope, 'dialogue', built.body, signal);
+    let previous='';
+    const progress = onText ? (content:string) => {
+      checkAbort(signal);const text=partialDialogueText(content);
+      if(text && text!==previous){previous=text;onText(text);}
+    } : undefined;
+    const body=onText?{...built.body,stream:true,stream_options:{include_usage:true}}:built.body;
+    const raw = await this.transport.request(this.config, input.scope, 'dialogue', body, signal, undefined, undefined, progress);
     checkAbort(signal);
-    const reply = parseModelJson(completedText(raw)), text = normalizeSpokenText(string(reply.text), built.currentMessage);
+    const reply = parseModelJson(onText ? string(raw.text) : completedText(raw)), text = normalizeSpokenText(string(reply.text), built.currentMessage);
     const intent = expression(reply.expression);
     const emotionAssessment = forgetting ? undefined : parseEmotionAssessment(reply.emotionAssessment,input);
     if (this.visualPolicy) {

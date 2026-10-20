@@ -176,20 +176,29 @@ export class WeChatService implements WeChatManagement {
       const voice=reply&&(reply.replyMode==='voice'||reply.replyMode==='follow_input'&&reply.source==='voice');
       if(voice){
         if(!this.media.sendVoice){this.update({lastDelivery:'failed',detail:'语音回复尚不可用，本次没有改用文字发送。'});return false;}
+        // The audio copy is an attachment, and a client that does not render it would leave
+        // the whole answer invisible. Send the readable reply first so a voice-mode turn can
+        // never arrive as nothing at all; the audio still follows as the voice copy.
+        if(!await this.deliverText(auth,key,context,text,id,signal))return false;
         const part='out:'+digest(id+':voice');if(this.store.seenStatus(key,part)==='accepted')return true;
         if(!this.store.claim(key,part))return false;
         try{await this.media.sendVoice(auth,context,text,randomUUID(),signal);signal.throwIfAborted();this.store.finish(key,part,'accepted');}
-        catch{this.store.finish(key,part,'unknown');this.update({lastDelivery:'unknown',detail:'语音回复未确认送达，未自动重发或改用文字。'});return false;}
+        catch{this.store.finish(key,part,'unknown');this.update({lastDelivery:'unknown',detail:'文字回复已送达，语音附件未确认送达；未自动重发。'});return false;}
         this.update({lastOutputAt:new Date().toISOString(),lastDelivery:'accepted'});return true;
       }
-      const chars=Array.from(text);for(let n=0;n<chars.length;n+=1500){
-        signal.throwIfAborted();const part='out:'+digest(id+':'+n),old=this.store.seenStatus(key,part);
-        if(old==='accepted')continue;if(!this.store.claim(key,part))return false;
-        try{await this.api.send(auth,context,chars.slice(n,n+1500).join(''),randomUUID(),signal);signal.throwIfAborted();this.store.finish(key,part,'accepted');}
-        catch(error){this.store.finish(key,part,'unknown');this.update({lastDelivery:'unknown',detail:'回复尚未确认送达，请在微信主动查询；任务结果仍保留。'});return false;}
-      }
+      if(!await this.deliverText(auth,key,context,text,id,signal))return false;
       this.update({lastOutputAt:new Date().toISOString(),lastDelivery:'accepted'});return true;
     });this.outputs=job.catch(()=>{});return job;
+  }
+  /** Bounded text delivery with per-chunk durable claims; never rewrites bytes. */
+  private async deliverText(auth: WeChatCredentials,key: string,context: string,text: string,id: string,signal: AbortSignal):Promise<boolean>{
+    const chars=Array.from(text);for(let n=0;n<chars.length;n+=1500){
+      signal.throwIfAborted();const part='out:'+digest(id+':'+n),old=this.store.seenStatus(key,part);
+      if(old==='accepted')continue;if(!this.store.claim(key,part))return false;
+      try{await this.api.send(auth,context,chars.slice(n,n+1500).join(''),randomUUID(),signal);signal.throwIfAborted();this.store.finish(key,part,'accepted');}
+      catch(error){this.store.finish(key,part,'unknown');this.update({lastDelivery:'unknown',detail:'回复尚未确认送达，请在微信主动查询；任务结果仍保留。'});return false;}
+    }
+    return true;
   }
   private async stop(persist: boolean) {
     if(persist)this.store.set('enabled',false);
